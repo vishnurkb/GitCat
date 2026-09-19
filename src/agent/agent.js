@@ -9,6 +9,7 @@ import { snapshot, contextText, resetGhCache } from "./context.js";
 import { fastRoute } from "./router.js";
 import { matchKnownError } from "./knownErrors.js";
 import { diffFor, writeCommitMessage } from "./commitMessage.js";
+import { hasVerifier, captureBefore, verifyStep } from "./verify.js";
 import { SYSTEM_PROMPT, slimSystemPrompt, planMessage, debugMessage, EXPLAIN_SYSTEM } from "./prompt.js";
 
 const RISK_RANK = { read: 0, write: 1, danger: 2 };
@@ -194,8 +195,10 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       }
     }
     const outputs = [];
+    const verified = [];
+    const unverified = [];
     for (let i = 0; i < steps.length; i++) {
-      if (signal.aborted) return { ok: false, outputs };
+      if (signal.aborted) return { ok: false, outputs, verified, unverified };
       const step = steps[i];
       if (i > 0) snap = await snapshot(state.cwd);
       const needsMsg = step.op.autoMessage && !step.args.message && !step.args.amend;
@@ -224,8 +227,11 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         cmds = buildCommands(step, { cwd: state.cwd, snap });
       } catch (e) {
         ui.emit({ type: "note", tone: "error", text: `Couldn't build ${step.op.id}: ${e.message}` });
-        return { ok: false, outputs };
+        return { ok: false, outputs, verified, unverified };
       }
+      const before = hasVerifier(step.op.id) ? await captureBefore(state.cwd, snap) : null;
+      const stepOutput = [];
+      let skipped = false;
       for (const c of cmds) {
         let res;
         let label;
@@ -249,20 +255,56 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         if (!res.ok && isCommitCmd(c) && NOTHING_TO_COMMIT.test(stripAnsi(text))) {
           ui.emit({ type: "note", tone: "muted", text: "Nothing new to commit — skipping the commit and continuing." });
           outputs.push({ command: label, ok: true, output: "nothing to commit" });
+          skipped = true;
           continue;
         }
         ui.emit({ type: "cmd", command: label, ok: res.ok, output: text, ms: res.ms });
         outputs.push({ command: label, ok: res.ok, output: text });
-        if (!res.ok) {
-          if (signal.aborted) return { ok: false, outputs };
-          const fixed = await debug({ request, command: label, argv: c.internal ? [] : c, output: stripAnsi(text), failed: step, rest: steps.slice(i + 1), depth, signal });
-          outputs.push({ command: "auto-fix + retry", ok: fixed, output: fixed ? "fix applied, remaining steps ran" : "not fixed" });
-          return { ok: fixed, outputs, failedAt: label, notRun: fixed ? [] : steps.slice(i + 1).map((s) => s.op.id) };
+        stepOutput.push(text);
+        // Failed command, but is the goal state already true? (e.g. deleting a branch
+        // that the PR merge already deleted). Decided by the real state, never assumed.
+        if (!res.ok && before && cmds.length === 1 && !signal.aborted) {
+          const v = await verifyStep(step, before, state.cwd, { output: text, builtName: c[3], pushed: c.includes?.("--push") });
+          if (v.ok === true) {
+            ui.emit({ type: "verify", ok: true, text: `already the case — ${v.text}` });
+            verified.push(v.text);
+            outputs.push({ command: `verify ${step.op.id}`, ok: true, output: v.text });
+            skipped = true;
+            break;
+          }
         }
+        if (!res.ok) {
+          if (signal.aborted) return { ok: false, outputs, verified, unverified };
+          const fix = await debug({ request, command: label, argv: c.internal ? [] : c, output: stripAnsi(text), failed: step, rest: steps.slice(i + 1), depth, signal });
+          const fixed = !!fix?.ok;
+          outputs.push({ command: "auto-fix + retry", ok: fixed, output: fixed ? "fix applied, remaining steps ran" : "not fixed" });
+          return {
+            ok: fixed,
+            outputs,
+            verified: [...verified, ...(fix?.verified || [])],
+            unverified: [...unverified, ...(fix?.unverified || [])],
+            failedAt: fix?.failedAt || label,
+            notRun: fixed ? [] : steps.slice(i + 1).map((s) => s.op.id),
+          };
+        }
+      }
+      // Exit code 0 is not proof. Check the real state (local refs, the remote, GitHub).
+      if (before && !skipped) {
+        ui.status(`Verifying ${step.op.id} against the real repo…`);
+        const last = cmds.at(-1) || [];
+        const v = await verifyStep(step, before, state.cwd, {
+          output: stepOutput.join("\n"),
+          builtName: step.op.id === "gh_repo_create" ? last[3] : undefined,
+          pushed: Array.isArray(last) && last.includes("--push"),
+        });
+        ui.emit({ type: "verify", ok: v.ok, text: v.text });
+        outputs.push({ command: `verify ${step.op.id}`, ok: v.ok === true, output: v.text });
+        if (v.ok === false) return { ok: false, outputs, verified, unverified, failedAt: `${step.op.id} (verification: ${v.text})`, notRun: steps.slice(i + 1).map((s) => s.op.id) };
+        (v.ok ? verified : unverified).push(v.text);
       }
       afterStep(step, snap);
     }
-    return { ok: true, outputs };
+    return { ok: true, outputs, verified, unverified };
   }
 
   function afterStep(step, snap) {
@@ -274,7 +316,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     }
   }
 
-  /** Diagnose a failure and (after confirmation) run a fix. Returns true only if the fix ran through. */
+  /** Diagnose a failure and (after confirmation) run a fix. Returns the fix run result, or null if no fix ran. */
   async function debug({ request, command, argv, output, failed, rest, depth, signal }) {
     ui.status("Diagnosing the failure…");
     const snap = await snapshot(state.cwd);
@@ -298,7 +340,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     // Re-running the exact step that just failed, unchanged, is a loop, not a fix.
     const sig = (s) => `${s.op.id}${JSON.stringify(s.args)}`;
     if (failed && !(known && known.steps !== null) && steps.length && sig(steps[0]) === sig(failed)) steps = steps.slice(1);
-    if (!steps.length || depth >= MAX_FIX_DEPTH || signal.aborted) return false;
+    if (!steps.length || depth >= MAX_FIX_DEPTH || signal.aborted) return null;
     if (known && known.steps !== null) {
       // A known fix repairs the cause; the step that failed (and everything after it)
       // still has to run, e.g. "no commits yet" -> add + commit, THEN the push again.
@@ -306,7 +348,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       steps = [...steps, ...tail];
     }
     const r = await execute(steps, { request, depth: depth + 1, signal, isFix: true });
-    return r.ok;
+    return r;
   }
 
   async function explain(question, outputs, signal) {
@@ -360,10 +402,14 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       if (plan.steps.some((s) => s.op.id === "sync_check")) plan.explain = false; // its answer is exact already
       const result = await execute(plan.steps, { request, signal });
       if (result.ok && plan.explain && !signal.aborted) await explain(request, result.outputs, signal);
-      // The model's reply is a plan, not proof. When the request didn't finish, say so plainly.
+      // The model's reply is a plan, not proof. Only verified state earns "done".
       if (!result.ok && !result.cancelled && !signal.aborted) {
         const skipped = result.notRun?.length ? ` Not run: ${result.notRun.join(", ")}.` : "";
-        ui.emit({ type: "note", tone: "error", text: `Request NOT completed — stopped at \`${result.failedAt || "a failed step"}\`.${skipped}` });
+        ui.emit({ type: "summary", ok: false, text: `Request NOT completed — stopped at \`${result.failedAt || "a failed step"}\`.${skipped}` });
+      } else if (result.ok && result.unverified?.length) {
+        ui.emit({ type: "summary", ok: null, text: `Commands ran, but I could NOT confirm: ${result.unverified.join("; ")}. Don't treat this as done.` });
+      } else if (result.ok && result.verified?.length) {
+        ui.emit({ type: "summary", ok: true, text: `Done — verified ${result.verified.length} change(s) against the real repo.` });
       }
       remember(request, result.outputs, plan.reply);
     } catch (e) {

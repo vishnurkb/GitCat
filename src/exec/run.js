@@ -34,7 +34,8 @@ export async function run(argv, { cwd, input, timeoutMs = 120_000, color = true,
       reject: false,
       timeout: timeoutMs,
       cancelSignal: signal,
-      env: { ...process.env, ...CHILD_ENV },
+      // color:false must mean machine-readable: gh colorizes --json output under CLICOLOR_FORCE
+      env: color ? { ...process.env, ...CHILD_ENV } : { ...process.env, ...CHILD_ENV, CLICOLOR_FORCE: "0", NO_COLOR: "1" },
       stripFinalNewline: true,
       windowsHide: true,
     });

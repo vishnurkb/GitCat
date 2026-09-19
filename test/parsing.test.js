@@ -34,9 +34,16 @@ test("known errors map to fixes", () => {
   );
   assert.deepEqual(matchKnownError("error: src refspec main does not match any", s).steps.map((x) => x.op), ["add", "commit"]);
   assert.equal(matchKnownError("fatal: not a git repository (or any of the parent directories): .git", s).steps[0].op, "init");
-  const auth = matchKnownError("remote: Permission to bob/x.git denied to alice.\nfatal: unable to access", s);
+  // repo owned by the user's OTHER account -> switch to exactly that account
+  const bobRepo = { ...s, defaultRemote: "origin", remoteUrls: { origin: "https://github.com/bob/x.git" } };
+  const auth = matchKnownError("remote: Permission to bob/x.git denied to alice.\nfatal: unable to access", bobRepo);
   assert.match(auth.cause, /bob/);
-  assert.equal(auth.steps[0].op, "gh_switch_account");
+  assert.deepEqual(auth.steps[0], { op: "gh_switch_account", args: { user: "bob" } });
+  // repo doesn't exist under the active account -> never flip accounts
+  const mine = { ...s, defaultRemote: "origin", remoteUrls: { origin: "https://github.com/alice/nope.git" } };
+  const nf = matchKnownError("remote: Repository not found.\nfatal: repository 'https://github.com/alice/nope.git/' not found", mine);
+  assert.deepEqual(nf.steps, []);
+  assert.match(nf.cause, /alice\/nope doesn't exist/);
   assert.equal(matchKnownError("CONFLICT (content): Merge conflict in a.txt", s).steps.length, 0);
   assert.equal(matchKnownError("error: remote origin already exists.", s).steps, null); // cause known, model plans the fix
   assert.equal(matchKnownError("something totally new", s), null);

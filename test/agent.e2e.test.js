@@ -347,3 +347,77 @@ test("sync_check answers 'did you push?' from git, not from the model", async ()
   await fresh.agent.handle("did u push");
   assert.match(fresh.cmds()[0].output, /No — there are no commits yet/);
 });
+
+// ---- "Never say yes unless it's really done" -------------------------------
+
+const summaryOf = (h) => h.items.filter((i) => i.type === "summary").at(-1);
+
+test("verified: repo create + push ends with a VERIFIED done summary", async () => {
+  useFakeGh();
+  const dir = freshUncommittedRepo("verifiedcreate");
+  const h = harness(dir, [{ steps: [{ op: "gh_repo_create", args: { name: "GitCatV" } }] }]);
+  await h.agent.handle("create a private repo GitCatV and push");
+  const v = h.items.find((i) => i.type === "verify");
+  assert.equal(v.ok, true, v.text);
+  assert.match(v.text, /has your code/);
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("NEVER claims done when gh exits 0 but pushed nothing (FAKE_GH_LIE)", async () => {
+  useFakeGh();
+  process.env.FAKE_GH_LIE = "1";
+  try {
+    const dir = freshUncommittedRepo("liar");
+    const h = harness(dir, [{ steps: [{ op: "gh_repo_create", args: { name: "GitCatLie" } }] }]);
+    await h.agent.handle("create a private repo GitCatLie and push this folder");
+    assert.ok(h.cmds().every((c) => c.ok), "every command exited 0");
+    const v = h.items.find((i) => i.type === "verify");
+    assert.equal(v.ok, false);
+    assert.match(v.text, /EMPTY — nothing was pushed/);
+    assert.equal(summaryOf(h).ok, false);
+    assert.match(summaryOf(h).text, /NOT completed/);
+    assert.ok(!h.items.some((i) => i.type === "summary" && i.ok === true), "no success summary may appear");
+  } finally {
+    delete process.env.FAKE_GH_LIE;
+  }
+});
+
+test("NEVER claims done when the push target is unreachable", async () => {
+  const dir = makeRepo("unreachable", { remote: false });
+  git(dir, "remote", "add", "origin", path.join(ROOT, "no-such-remote.git"));
+  const h = harness(dir, [{ steps: [{ op: "push", args: {} }] }, { steps: [] }]);
+  await h.agent.handle("push to github");
+  assert.equal(summaryOf(h).ok, false);
+  assert.ok(!h.items.some((i) => i.type === "summary" && i.ok === true));
+});
+
+test("verification compares against the REMOTE, not the local tracking ref", async () => {
+  const dir = makeRepo("remotecheck");
+  fs.writeFileSync(path.join(dir, "z.txt"), "z\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "z");
+  const h = harness(dir, [{ steps: [{ op: "push", args: {} }] }]);
+  await h.agent.handle("push");
+  const v = h.items.find((i) => i.type === "verify");
+  assert.equal(v.ok, true);
+  const remoteSha = git(ROOT, "--git-dir", path.join(ROOT, "remotecheck.git"), "rev-parse", "main");
+  assert.ok(v.text.includes(remoteSha.slice(0, 7)), v.text);
+});
+
+test("failed command whose goal is already true is reported as 'already the case' (verified)", async () => {
+  const dir = makeRepo("alreadygone");
+  const h = harness(dir, [{ steps: [{ op: "delete_remote_branch", args: { branch: "never-existed" } }] }]);
+  await h.agent.handle("delete the never-existed branch on github");
+  const v = h.items.find((i) => i.type === "verify");
+  assert.equal(v.ok, true);
+  assert.match(v.text, /already the case — never-existed no longer exists on the remote/);
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("failed commit is never rescued by 'already the case'", async () => {
+  const dir = makeRepo("nocommit", { remote: false });
+  const h = harness(dir, [{ steps: [{ op: "commit", args: { message: "x", allow_empty: false } }] }, { steps: [] }]);
+  fs.writeFileSync(path.join(dir, "u.txt"), "u\n"); // untracked only -> "nothing added to commit"
+  await h.agent.handle("commit");
+  assert.ok(!h.items.some((i) => i.type === "summary" && i.ok === true && !h.items.some((j) => j.type === "verify" && j.ok === true && /commit .* created/.test(j.text))));
+});

@@ -15,7 +15,8 @@ The tables below are hand-written: what each file is for and what would surprise
 |   `-- structure.md
 |-- scripts/
 |   |-- e2e.js
-|   `-- eval.js
+|   |-- eval.js
+|   `-- github-e2e.js
 |-- src/
 |   |-- agent/
 |   |   |-- agent.js
@@ -23,7 +24,8 @@ The tables below are hand-written: what each file is for and what would surprise
 |   |   |-- context.js
 |   |   |-- knownErrors.js
 |   |   |-- prompt.js
-|   |   `-- router.js
+|   |   |-- router.js
+|   |   `-- verify.js
 |   |-- catalog/
 |   |   |-- branches.js
 |   |   |-- changes.js
@@ -90,6 +92,7 @@ The tables below are hand-written: what each file is for and what would surprise
 | `src/agent/prompt.js` | `SYSTEM_PROMPT` is static on purpose so Ollama reuses its KV cache; `slimSystemPrompt()` is the Groq variant. |
 | `src/agent/context.js` | Snapshot from `git status --porcelain=v2` + 5 parallel git calls (~100 ms). gh accounts read from gh's `hosts.yml` (instant, offline) instead of `gh auth status` (~1 s, network). |
 | `src/agent/knownErrors.js` | Regex → cause + fix steps. `steps: null` means "cause known, let the model plan". Order matters: first match wins. |
+| `src/agent/verify.js` | Post-condition checks. After each state-changing step: ls-remote / `gh --json` / refs decide whether it really happened. `ok: null` (couldn't check) is never reported as success. |
 | `src/agent/commitMessage.js` | Diff (truncated to 7k chars) → conventional commit message; strips empty scopes like `feat(:)`. |
 
 ## Catalog
@@ -134,6 +137,7 @@ The tables below are hand-written: what each file is for and what would surprise
 | `test/fixtures/fake-gh.mjs` | Stand-in `gh` for tests (set `GITCAT_GH_SHIM`): `repo create --source --push` and `repo view` backed by a local bare repo, so GitHub flows run end to end without a real account. |
 | `scripts/eval.js` | 50-request accuracy/latency eval against real models. |
 | `scripts/e2e.js` | 18 real-model scenarios on throwaway repos with git-state assertions. |
+| `scripts/github-e2e.js` | 20 steps against the REAL GitHub account (repo create/push, PR, issue, merge, tag, release, rejected push, account switch, negative cases). Every step judged by its own `gh api` check; reports LIES (said done, wasn't). Creates 2 private `gitcat-e2e-*` repos per run. |
 | `check_docs.py` | Regenerates the tree above and flags undocumented / phantom paths. |
 | `check_docs.bat` | Double-click wrapper for `check_docs.py`. |
 | `.env.example` | Every env var GitCat reads, with placeholders. |

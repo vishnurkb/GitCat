@@ -55,6 +55,22 @@ export function Item({ item }) {
             ${item.text.split("\n").map((l, i) => html`<${Text} key=${i} color=${i === 0 ? C.cyan : C.dim}>${l || " "}<//>`)}
           <//>
         <//>`;
+    case "verify": {
+      const color = item.ok === true ? C.green : item.ok === false ? C.red : C.yellow;
+      const label = item.ok === true ? "✔ verified" : item.ok === false ? "✖ VERIFY FAILED" : "⚠ unverified";
+      return html`
+        <${Box} flexDirection="row" marginLeft=${2}>
+          <${Text} color=${color}>${label}: <//>
+          <${Box} flexShrink=${1}><${Text} color=${color}>${item.text}<//><//>
+        <//>`;
+    }
+    case "summary": {
+      const color = item.ok === true ? C.green : item.ok === false ? C.red : C.yellow;
+      return html`
+        <${Box} borderStyle="round" borderColor=${color} paddingX=${1}>
+          <${Text} bold color=${color}>${item.ok === true ? "✔ " : item.ok === false ? "✖ " : "⚠ "}${item.text}<//>
+        <//>`;
+    }
     case "diagnosis":
       return html`
         <${Box} flexDirection="row" marginTop=${0}>

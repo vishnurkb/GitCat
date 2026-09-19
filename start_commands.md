@@ -51,12 +51,20 @@ ollama pull qwen3:4b-instruct-2507-q4_K_M
 ## Verify
 
 ```bash
-npm test                       # 50 tests: catalog, parsing, agent e2e on real git (incl. fake GitHub), TUI
+npm test                       # 56 tests: catalog, parsing, agent e2e on real git (incl. fake GitHub + lying gh), TUI
 node scripts/e2e.js ollama     # 18 real-model scenarios on throwaway repos (~35 s)
 node scripts/eval.js ollama    # planner accuracy, 50 requests (~1 min)
 ```
 
-Expected: `ℹ pass 50 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 49/50` or better.
+Real GitHub (creates 2 private `gitcat-e2e-*` repos on the active account — delete them afterwards):
+
+```bash
+node scripts/github-e2e.js     # ~2.5 min; every step checked independently with gh api
+```
+
+Expected: `ℹ pass 56 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 48/50` or better (varies ±1 run to run);
+GitHub run: `20/20 steps actually happened`, `LIES: 0`, `Under-claims: 0`.
+Deleting test repos needs a token scope gh doesn't have by default: `gh auth refresh -h github.com -s delete_repo`, then `gh repo delete vishnurkb/<name> --yes`.
 `node scripts/eval.js groq` takes ~11 minutes because it paces itself under Groq's rate limit.
 
 ## Using it

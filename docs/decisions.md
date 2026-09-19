@@ -2,6 +2,13 @@
 
 Append-only, newest first.
 
+## 2026-09-19 — "Done" requires a verified post-condition, not exit code 0
+**Context:** The user's rule: the agent must never say yes unless the work really happened. Exit code 0 is not proof (`gh repo create` without `--push` exits 0 and leaves an empty repo).
+**Decision:** `src/agent/verify.js` checks the real state after every state-changing step — `git ls-remote` for pushes/tags/branches (the remote itself, not the local tracking ref), `gh … --json` for repos/PRs/issues/releases, hosts.yml for account switches. Only verified steps produce "Done — verified"; unreachable checks produce "could NOT confirm"; failed checks produce "Request NOT completed". A failed command whose goal state is already true (branch already deleted) is reported as "already the case" — again only if the check passes.
+**Evidence:** `scripts/github-e2e.js` on the real account: 20/20 steps independently confirmed via `gh api`, 0 lies, 0 under-claims. `FAKE_GH_LIE` test proves a 0-exit-code-but-nothing-pushed gh is reported as NOT completed.
+**Also fixed by that run:** gh colorized `--json` output under `CLICOLOR_FORCE` (verification couldn't parse it); the auth-error fix flipped gh accounts for a repo that didn't exist — it now switches only when the repo owner is another logged-in account.
+**Trade-off:** ~0.5–1 s extra per remote-affecting step (one ls-remote / gh call).
+
 ## 2026-09-19 — Post-release fixes from the first real session ("created repo, never pushed")
 **Context:** User asked "create a private repo GitCat and push this folder". Result: empty GitHub repo, then the agent claimed "Yes, I pushed". Four bugs: (1) `gh_repo_create` dropped `--push` when the repo had no commits; (2) a known-error fix (add + commit) never retried the failed push; (3) "nothing to commit" aborted the rest of a plan, so `push` never ran; (4) the model's `reply` asserted success that never happened.
 **Decision:** `gh_repo_create` makes the initial commit (and `git init`) itself; known fixes append the failed step + remaining steps; a clean-tree commit is skipped, not fatal; replies are intent-only, unfinished requests print "Request NOT completed"; "did you push?" is answered by `sync_check` (fetch + compare), never by the model; `cd` the user didn't ask for is dropped.

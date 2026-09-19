@@ -14,6 +14,8 @@ export async function runHeadless({ request, settings, cwd, yes = false, json = 
     emit: (item) => {
       items.push(item);
       if (item.type === "cmd" && !item.ok) failed = true;
+      if ((item.type === "summary" || item.type === "verify") && item.ok !== true) failed = true;
+      if (item.type === "summary" && item.ok === true) failed = false; // an auto-fixed failure that verified is a success
       if (json) return;
       switch (item.type) {
         case "agent":
@@ -25,6 +27,12 @@ export async function runHeadless({ request, settings, cwd, yes = false, json = 
         case "cmd":
           console.log(`${item.ok ? paint("green", "  ✔") : paint("red", "  ✖")} ${paint("bold", item.command)}`);
           if (item.output) console.log(item.output.split("\n").slice(0, 40).map((l) => "    " + l).join("\n"));
+          break;
+        case "verify":
+          console.log(item.ok === true ? paint("green", `  ✔ verified: ${item.text}`) : item.ok === false ? paint("red", `  ✖ VERIFY FAILED: ${item.text}`) : paint("yellow", `  ⚠ could not verify: ${item.text}`));
+          break;
+        case "summary":
+          console.log(paint(item.ok === true ? "green" : item.ok === false ? "red" : "yellow", `${item.ok === true ? "✔" : item.ok === false ? "✖" : "⚠"} ${item.text}`));
           break;
         case "diagnosis":
           console.log(paint("yellow", `  🩺 ${item.text}`));

@@ -34,7 +34,7 @@ test/                    node:test suites (catalog, parsing, agent e2e, TUI)
 | Router | exact phrases like `push`, raw `git …`, `cd …` → steps with no model call | `src/agent/router.js` `fastRoute()` |
 | Planner | one model call → `{reply, steps:[{op,args}], ask, explain}`; validates every step with `resolveStep`, one repair round if invalid | `src/agent/agent.js` `askModel()` |
 | Catalog | op ids, param specs (`"str!"`, `"bool"`, `"a|b"`), risk tier, `build(args, ctx) → argv[]` | `src/catalog/index.js` `resolveStep()`, `buildCommands()` |
-| Executor | confirm policy by mode × risk, re-snapshot between steps, auto commit message, internal steps (`.gitignore`, `cd`) | `agent.js` `execute()` |
+| Executor | confirm policy by mode × risk, re-snapshot between steps, auto commit message, internal steps (`.gitignore`, `cd`), then a post-condition check per step (`verify.js`) — "done" only when verified | `agent.js` `execute()` |
 | Debugger | known-error table first (instant), else model diagnosis; fix plan always confirmed; max 2 rounds | `agent.js` `debug()` + `knownErrors.js` |
 | LLM | provider order, slim prompt for Groq, Ollama KV-cache warmup | `src/llm/index.js` `chat()` |
 | TUI | Static transcript, animated cat + status, prompt with slash menu/history, confirm box | `src/ui/App.js` `startApp()` |
@@ -70,7 +70,7 @@ snapshot were skipped, the second step would push the old branch.
 
 ```mermaid
 flowchart LR
-  E[edit src/] --> T[npm test — 50 tests]
+  E[edit src/] --> T[npm test — 56 tests]
   T --> EV[node scripts/eval.js ollama — accuracy must not drop]
   EV --> E2[node scripts/e2e.js ollama — 18 real scenarios]
   E2 --> D[python check_docs.py --write]

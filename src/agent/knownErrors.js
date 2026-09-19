@@ -80,13 +80,23 @@ const RULES = [
   },
   {
     test: /Permission to .* denied|403|Authentication failed|could not read Username|terminal prompts disabled|Repository not found/i,
-    fix: (s) => ({
-      cause:
-        s.ghAccounts?.length > 1
-          ? `GitHub rejected the credentials. Active account is "${s.ghUser}" — the repo may belong to another account (${s.ghAccounts.filter((a) => a !== s.ghUser).join(", ")}).`
-          : "GitHub rejected the credentials (or the repo doesn't exist / you have no access).",
-      steps: s.ghAccounts?.length > 1 ? [{ op: "gh_switch_account", args: {} }, { op: "gh_setup_git" }] : [{ op: "gh_setup_git" }],
-    }),
+    fix: (s, argv, output) => {
+      // Only switch accounts when the repo's OWNER is one of the user's other
+      // logged-in accounts. Guessing ("maybe it's the other account") flips the
+      // user's gh login back and forth for a repo that simply doesn't exist.
+      const url = s.remoteUrls?.[s.upstreamRemote || s.defaultRemote] || "";
+      const m = url.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+      const owner = m?.[1] || "";
+      const other = (s.ghAccounts || []).find((a) => a !== s.ghUser && a.toLowerCase() === owner.toLowerCase());
+      if (other)
+        return {
+          cause: `The repo belongs to "${other}" but the active GitHub account is "${s.ghUser}".`,
+          steps: [{ op: "gh_switch_account", args: { user: other } }, { op: "gh_setup_git" }],
+        };
+      if (/Repository not found|not found/i.test(output))
+        return { cause: `GitHub says ${m ? `${owner}/${m[2]}` : "this repository"} doesn't exist, or "${s.ghUser}" can't access it. Check the URL (${url || "no remote"}) — or create the repo first.`, steps: [] };
+      return { cause: `GitHub rejected the credentials for "${s.ghUser}". Re-linking git to gh's login.`, steps: [{ op: "gh_setup_git" }] };
+    },
   },
   {
     test: /HEAD detached|You are not currently on a branch/i,
@@ -111,7 +121,7 @@ const RULES = [
  */
 export function matchKnownError(output, snap, argv = []) {
   for (const r of RULES) {
-    if (r.test.test(output)) return r.fix(snap, argv);
+    if (r.test.test(output)) return r.fix(snap, argv, output);
   }
   return null;
 }
