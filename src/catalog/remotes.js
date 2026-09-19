@@ -28,7 +28,8 @@ export default [
     params: { remote: "str", branch: "str", rebase: "bool", allow_unrelated: "bool" },
     risk: "write",
     build: (p, ctx) => {
-      const a = ["git", "pull", p.rebase ? "--rebase" : "--no-rebase"];
+      // --autostash: local edits are parked and restored around the pull instead of blocking it
+      const a = ["git", "pull", p.rebase ? "--rebase" : "--no-rebase", "--autostash"];
       if (p.allow_unrelated) a.push("--allow-unrelated-histories");
       if (p.remote || p.branch || !ctx.snap.upstream) {
         const remote = p.remote || ctx.snap.defaultRemote || "origin";
@@ -39,10 +40,18 @@ export default [
   },
   {
     id: "fetch",
-    desc: "download remote updates without merging (prune removes deleted remote branches)",
-    params: { remote: "str", prune: "bool" },
+    desc: "download remote updates without merging. branch=only that branch; prune=forget remote branches deleted on the remote",
+    params: { remote: "str", branch: "str", prune: "bool" },
     risk: "read",
-    build: (p) => [["git", "fetch", ...(p.remote ? [p.remote] : ["--all"]), ...(p.prune ? ["--prune"] : [])]],
+    build: (p) => [["git", "fetch", ...(p.remote || p.branch ? [p.remote || "origin"] : ["--all"]), ...(p.branch ? [p.branch] : []), ...(p.prune ? ["--prune"] : [])]],
+  },
+  {
+    id: "delete_remote_tag",
+    desc: "delete a tag on the remote (GitHub)",
+    params: { name: "str!", remote: "str" },
+    risk: "danger",
+    warn: () => "The tag is deleted on the remote for everyone.",
+    build: (p) => [["git", "push", p.remote || "origin", "--delete", `refs/tags/${p.name}`]],
   },
   {
     id: "sync",
@@ -52,7 +61,7 @@ export default [
       const remote = ctx.snap.upstreamRemote || ctx.snap.defaultRemote || "origin";
       const b = ctx.snap.branch;
       return ctx.snap.upstream
-        ? [["git", "pull", "--rebase"], ["git", "push"]]
+        ? [["git", "pull", "--rebase", "--autostash"], ["git", "push"]]
         : [["git", "push", "-u", remote, b]];
     },
   },

@@ -1,6 +1,6 @@
 # start_commands.md
 
-> Last verified: 2026-09-19 on Windows 11 (Node 24.18.0, git 2.55.0, gh 2.96.0,
+> Last verified: 2026-09-20 on Windows 11 (Node 24.18.0, git 2.55.0, gh 2.96.0,
 > Ollama with `qwen3:4b-instruct-2507-q4_K_M`, RTX 4050 6 GB). Every command
 > below was run. The only NOT VERIFIED items are marked inline.
 
@@ -51,19 +51,22 @@ ollama pull qwen3:4b-instruct-2507-q4_K_M
 ## Verify
 
 ```bash
-npm test                       # 56 tests: catalog, parsing, agent e2e on real git (incl. fake GitHub + lying gh), TUI
+npm test                       # 73 tests: catalog, parsing, intent guard, agent e2e on real git (incl. fake GitHub + lying gh), TUI
 node scripts/e2e.js ollama     # 18 real-model scenarios on throwaway repos (~35 s)
 node scripts/eval.js ollama    # planner accuracy, 50 requests (~1 min)
 ```
 
-Real GitHub (creates 2 private `gitcat-e2e-*` repos on the active account — delete them afterwards):
+User-journey and real-GitHub suites (the GitHub ones create private test repos on the active account — delete them afterwards):
 
 ```bash
-node scripts/github-e2e.js     # ~2.5 min; every step checked independently with gh api
+node scripts/journey.js --local   # 63 real-user prompts on local repos (~3 min), independently checked
+node scripts/journey.js           # + 10 on real GitHub: repo, PR, merge, issue, release, clone (~4.5 min)
+node scripts/github-e2e.js        # 20 GitHub steps incl. account switching and negative cases (~2.5 min)
 ```
 
-Expected: `ℹ pass 56 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 48/50` or better (varies ±1 run to run);
-GitHub run: `20/20 steps actually happened`, `LIES: 0`, `Under-claims: 0`.
+Expected (last run 2026-09-20): `ℹ pass 73 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 49/50` (±1 run to run);
+journey `73/73 prompts did the right thing`, `LIES: 0`; GitHub run `20/20`, `LIES: 0`, `Under-claims: 0`.
+The journey creates 1 private `gitcat-journey-*` repo, github-e2e creates 2 `gitcat-e2e-*` repos.
 Deleting test repos needs a token scope gh doesn't have by default: `gh auth refresh -h github.com -s delete_repo`, then `gh repo delete vishnurkb/<name> --yes`.
 `node scripts/eval.js groq` takes ~11 minutes because it paces itself under Groq's rate limit.
 

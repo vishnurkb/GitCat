@@ -3,7 +3,8 @@ import { render, Box, Text, Static, useApp, useInput } from "ink";
 import { html, C, MODE_ORDER } from "./theme.js";
 import { Header, Tips } from "./components/Header.js";
 import { Item } from "./components/Item.js";
-import { Busy } from "./components/Busy.js";
+import { CatDock } from "./components/CatDock.js";
+import { moodFor } from "./cat.js";
 import { Confirm, confirmKey } from "./components/Confirm.js";
 import { PromptInput } from "./components/PromptInput.js";
 import { findSlash } from "./slash.js";
@@ -29,8 +30,15 @@ export function App({ settings, cwd: startCwd, initialRepo = null, llm }) {
   const [, force] = useState(0);
   const [history, setHistory] = useState(() => loadHistory());
   const queue = useRef([]);
+  const [warming, setWarming] = useState(false);
+  const lastActive = useRef(Date.now());
+  const startedAt = useRef(Date.now());
+  const flash = useRef(null); // {mood, text, until} — success/sad reaction after a request
 
-  const emit = useCallback((item) => setItems((prev) => [...prev, { ...item, id: nextId++ }]), []);
+  const emit = useCallback((item) => {
+    if (item.type === "summary") flash.current = { mood: item.ok === true ? "success" : item.ok === false ? "sad" : "waiting", text: item.text, until: Date.now() + 4500 };
+    setItems((prev) => [...prev, { ...item, id: nextId++ }]);
+  }, []);
   const note = useCallback((text, tone = "info") => emit({ type: "note", text, tone }), [emit]);
 
   const ui = useMemo(
@@ -61,7 +69,10 @@ export function App({ settings, cwd: startCwd, initialRepo = null, llm }) {
   // startup: repo info, model availability check, warm the local model
   useEffect(() => {
     refreshRepo();
-    warmup(settings, SYSTEM_PROMPT);
+    if (providerOrder(settings)[0] === "ollama") {
+      setWarming(true);
+      warmup(settings, SYSTEM_PROMPT).finally(() => setWarming(false));
+    }
     (async () => {
       const order = providerOrder(settings);
       const local = await listOllamaModels(settings);
@@ -75,12 +86,15 @@ export function App({ settings, cwd: startCwd, initialRepo = null, llm }) {
 
   const runAgent = useCallback(
     async (text, shown = text) => {
+      lastActive.current = Date.now();
+      flash.current = null;
       emit({ type: "user", text: shown });
       setBusy(true);
       try {
         await agent.handle(text);
       } finally {
         setBusy(false);
+        lastActive.current = Date.now();
         await refreshRepo();
         const next = queue.current.shift();
         if (next) setTimeout(() => handleSubmit(next), 0); // eslint-disable-line no-use-before-define
@@ -172,7 +186,17 @@ export function App({ settings, cwd: startCwd, initialRepo = null, llm }) {
             ? html`<${Box} key=${item.id} flexDirection="column"><${Header} cwd=${cwd} repo=${repo} model=${modelLabel(settings)} version=${VERSION} /><${Tips} /><//>`
             : html`<${Box} key=${item.id} paddingX=${1}><${Item} item=${item} /><//>`}
       <//>
-      ${status && !confirmReq ? html`<${Box} paddingX=${1}><${Busy} status=${status} since=${since || Date.now()} /><//>` : null}
+      <${Box} paddingX=${1}>
+        <${CatDock}
+          baseMood=${confirmReq ? "waiting" : status ? moodFor(status) : warming ? "sleep" : null}
+          status=${confirmReq ? "Check the commands below, then press y or n" : status || (warming ? "Waking up the local model (first start takes a moment)…" : null)}
+          since=${since}
+          busy=${!!status || busy}
+          flash=${flash}
+          lastActive=${lastActive}
+          startedAt=${startedAt}
+        />
+      <//>
       ${confirmReq ? html`<${Box} paddingX=${1}><${Confirm} request=${confirmReq.request} yes=${confirmYes} /><//>` : null}
       <${PromptInput}
         active=${!confirmReq}
@@ -183,6 +207,7 @@ export function App({ settings, cwd: startCwd, initialRepo = null, llm }) {
         onEscape=${() => busy && agent.cancel()}
         onCycleMode=${cycleMode}
         onCtrlC=${() => (busy ? agent.cancel() : quit())}
+        onActivity=${() => (lastActive.current = Date.now())}
       />
       <${StatusLine} repo=${repo} cwd=${cwd} settings=${settings} />
     <//>

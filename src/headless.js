@@ -15,6 +15,7 @@ export async function runHeadless({ request, settings, cwd, yes = false, json = 
       items.push(item);
       if (item.type === "cmd" && !item.ok) failed = true;
       if ((item.type === "summary" || item.type === "verify") && item.ok !== true) failed = true;
+      if (item.type === "note" && item.tone === "error") failed = true;
       if (item.type === "summary" && item.ok === true) failed = false; // an auto-fixed failure that verified is a success
       if (json) return;
       switch (item.type) {

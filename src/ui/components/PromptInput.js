@@ -10,7 +10,7 @@ const MENU_SIZE = 7;
  * Single-line editor (wraps visually). Owns: text, cursor, slash menu,
  * history navigation. Calls onSubmit(text) on Enter.
  */
-export function PromptInput({ active, busy, mode, history, onSubmit, onEscape, onCycleMode, onCtrlC }) {
+export function PromptInput({ active, busy, mode, history, onSubmit, onEscape, onCycleMode, onCtrlC, onActivity }) {
   const [value, setValue] = useState("");
   const [cursor, setCursor] = useState(0);
   const [sel, setSel] = useState(0);
@@ -48,6 +48,7 @@ export function PromptInput({ active, busy, mode, history, onSubmit, onEscape, o
   useInput(
     (input, key) => {
       if (!activeRef.current) return;
+      onActivity?.();
       if (key.ctrl && input === "c") {
         if (value) return set("");
         return onCtrlC();

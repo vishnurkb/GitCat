@@ -16,12 +16,14 @@ The tables below are hand-written: what each file is for and what would surprise
 |-- scripts/
 |   |-- e2e.js
 |   |-- eval.js
-|   `-- github-e2e.js
+|   |-- github-e2e.js
+|   `-- journey.js
 |-- src/
 |   |-- agent/
 |   |   |-- agent.js
 |   |   |-- commitMessage.js
 |   |   |-- context.js
+|   |   |-- intent.js
 |   |   |-- knownErrors.js
 |   |   |-- prompt.js
 |   |   |-- router.js
@@ -44,7 +46,7 @@ The tables below are hand-written: what each file is for and what would surprise
 |   |   `-- index.js
 |   |-- ui/
 |   |   |-- components/
-|   |   |   |-- Busy.js
+|   |   |   |-- CatDock.js
 |   |   |   |-- Confirm.js
 |   |   |   |-- Header.js
 |   |   |   |-- Item.js
@@ -92,8 +94,9 @@ The tables below are hand-written: what each file is for and what would surprise
 | `src/agent/prompt.js` | `SYSTEM_PROMPT` is static on purpose so Ollama reuses its KV cache; `slimSystemPrompt()` is the Groq variant. |
 | `src/agent/context.js` | Snapshot from `git status --porcelain=v2` + 5 parallel git calls (~100 ms). gh accounts read from gh's `hosts.yml` (instant, offline) instead of `gh auth status` (~1 s, network). |
 | `src/agent/knownErrors.js` | Regex → cause + fix steps. `steps: null` means "cause known, let the model plan". Order matters: first match wins. |
+| `src/agent/intent.js` | Deterministic intent guard: after the model plans, the user's own words correct parameters (merge direction, ours/theirs, soft/mixed/hard, stay/switch, PR "it", commit-by-message) and strip unrequested dangerous flags; vague "delete it" becomes a question. |
 | `src/agent/verify.js` | Post-condition checks. After each state-changing step: ls-remote / `gh --json` / refs decide whether it really happened. `ok: null` (couldn't check) is never reported as success. |
-| `src/agent/commitMessage.js` | Diff (truncated to 7k chars) → conventional commit message; strips empty scopes like `feat(:)`. |
+| `src/agent/commitMessage.js` | Complete file list + per-file diff budget (every file visible, not just the first 7k chars) → conventional commit message; never leaves a commit without `-m`. |
 
 ## Catalog
 
@@ -119,10 +122,10 @@ The tables below are hand-written: what each file is for and what would surprise
 | `src/ui/App.js` | Root component. Owns the transcript (`<Static>`), confirm routing, queueing requests typed while busy. |
 | `src/ui/components/PromptInput.js` | Line editor, slash menu, history. Input is gated by a render-time ref (see decisions.md). |
 | `src/ui/components/Confirm.js` | Presentational confirm box + `confirmKey()` key mapping. |
-| `src/ui/components/Busy.js` | Animated cat + current status + elapsed time. |
-| `src/ui/components/Header.js` | Banner (cat, path, branch, model, gh account) and tips. |
+| `src/ui/components/CatDock.js` | Always-visible animated cat + what the agent is doing right now. Own ~8 fps timer; mood decided per frame (hello → idle → nap after 90 s; thinking/running/verifying/debugging while busy; success/sad reaction for 4.5 s). |
+| `src/ui/components/Header.js` | Wordmark banner (path, branch, model, gh account) and tips. The live cat is in CatDock. |
 | `src/ui/components/Item.js` | Renders each transcript item type (command, diagnosis, commit message, answer, help). |
-| `src/ui/cat.js` | Cat frames per mood (thinking/running/debugging/writing). ASCII only so widths match on every terminal. |
+| `src/ui/cat.js` | The cat: frames composed from parts (ears/eyes/mouth/body/tail) + props per mood (11 moods). ASCII + ω only, so widths match on every terminal. |
 | `src/ui/slash.js` | Slash commands. `prompt:` entries route through the agent's fast path; `run:` entries are local. |
 | `src/ui/theme.js` | Colors, mode labels, `html` template tag. |
 
@@ -137,6 +140,7 @@ The tables below are hand-written: what each file is for and what would surprise
 | `test/fixtures/fake-gh.mjs` | Stand-in `gh` for tests (set `GITCAT_GH_SHIM`): `repo create --source --push` and `repo view` backed by a local bare repo, so GitHub flows run end to end without a real account. |
 | `scripts/eval.js` | 50-request accuracy/latency eval against real models. |
 | `scripts/e2e.js` | 18 real-model scenarios on throwaway repos with git-state assertions. |
+| `scripts/journey.js` | 73 plain-English prompts covering a developer's everyday git cheat-sheet (init → staging → history → branches → stash → conflicts → rebase → undo/reflog → tags → team sync → cherry-pick → advanced → judgement → GitHub PR/issue/release). Each judged by independent git/`gh api` checks; reports LIES. `--local` skips GitHub. |
 | `scripts/github-e2e.js` | 20 steps against the REAL GitHub account (repo create/push, PR, issue, merge, tag, release, rejected push, account switch, negative cases). Every step judged by its own `gh api` check; reports LIES (said done, wasn't). Creates 2 private `gitcat-e2e-*` repos per run. |
 | `check_docs.py` | Regenerates the tree above and flags undocumented / phantom paths. |
 | `check_docs.bat` | Double-click wrapper for `check_docs.py`. |

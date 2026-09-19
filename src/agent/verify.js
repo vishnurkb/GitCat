@@ -20,7 +20,10 @@ const fail = (text) => ({ ok: false, text });
 const unknown = (text) => ({ ok: null, text });
 
 async function headSha(cwd) {
-  return (await quiet(["git", "rev-parse", "HEAD"], cwd)).out;
+  // --verify --quiet + exit code: in a repo with no commits, plain `rev-parse HEAD`
+  // prints the literal text "HEAD", which once passed for a commit hash.
+  const r = await quiet(["git", "rev-parse", "--verify", "--quiet", "HEAD"], cwd);
+  return r.ok && /^[0-9a-f]{40,64}$/.test(r.out) ? r.out : "";
 }
 
 /** Ask the remote itself (not the local tracking ref) where a branch points. */
@@ -144,7 +147,13 @@ const VERIFIERS = {
   },
   async undo_commit(args, before, cwd) {
     const now = await headSha(cwd);
-    return now && now !== before.headSha ? pass(`HEAD moved back to ${short(now)}; your changes are kept`) : fail("HEAD did not move");
+    if (now === before.headSha) return fail("HEAD did not move — the commit is still there");
+    const staged = (await quiet(["git", "diff", "--cached", "--name-only"], cwd)).out;
+    const dirty = (await quiet(["git", "status", "--porcelain", "--untracked-files=no"], cwd)).out;
+    const where = now ? `HEAD moved back to ${short(now)}` : "the only commit was undone";
+    if (args.discard) return dirty ? fail(`${where}, but changes are still there: ${dirty.split("\n").slice(0, 3).join(", ")}`) : pass(`${where}; its changes were discarded`);
+    if (args.unstage) return staged ? fail(`${where}, but files are still staged`) : pass(`${where}; changes kept as unstaged edits`);
+    return pass(`${where}; your changes are kept (staged)`);
   },
   async gh_switch_account(args, before, cwd, ctx) {
     resetGhCache();
@@ -207,7 +216,176 @@ const VERIFIERS = {
   },
 };
 
+// ---- more post-conditions: history edits, cleanup, config, cloning ----------
+
+const newCommit = async (before, cwd, what) => {
+  const now = await headSha(cwd);
+  if (!now || now === before.headSha) return fail(`no new commit — ${what} did not happen`);
+  return pass(`${what}: new commit ${short(now)} "${(await quiet(["git", "log", "-1", "--format=%s"], cwd)).out}"`);
+};
+const notInProgress = async (cwd, what) => {
+  const s = await snapshot(cwd);
+  if (s.inProgress) return fail(`a ${s.inProgress} is still in progress${s.conflicts.length ? ` (conflicts: ${s.conflicts.join(", ")})` : ""}`);
+  return pass(what);
+};
+const cfg = async (cwd, key, global) => (await quiet(["git", "config", ...(global ? ["--global"] : []), "--get", key], cwd)).out;
+
+Object.assign(VERIFIERS, {
+  revert: (args, before, cwd) => newCommit(before, cwd, `reverted ${args.ref}`),
+  cherry_pick: (args, before, cwd) => newCommit(before, cwd, `cherry-picked ${args.refs.join(", ")}`),
+  rebase: (args, before, cwd) => notInProgress(cwd, `rebased onto ${args.onto}`),
+  continue: (args, before, cwd) => notInProgress(cwd, "finished — nothing left in progress"),
+  abort: (args, before, cwd) => notInProgress(cwd, "aborted — nothing left in progress"),
+  resolve_conflicts: (args, before, cwd) => notInProgress(cwd, `conflicts resolved (kept ${args.side}) and concluded`),
+  async reset(args, before, cwd) {
+    // resolve the target against the state BEFORE the reset (HEAD~1 means something else afterwards)
+    const ref = (args.ref || "HEAD").replace(/^HEAD/, before.headSha || "HEAD");
+    const target = (await quiet(["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd)).out;
+    const now = await headSha(cwd);
+    return target && now === target ? pass(`branch now at ${short(now)} (${args.ref || "HEAD"}, ${args.mode || "mixed"})`) : fail(`HEAD is ${short(now)}, expected ${args.ref || "HEAD"} (${short(target)})`);
+  },
+  async discard(args, before, cwd) {
+    // both unstaged AND staged edits must be gone
+    const dirty = (await quiet(["git", "diff", "HEAD", "--name-only", "--", ...(args.paths || ["."])], cwd)).out;
+    return dirty ? fail(`still modified: ${dirty.split("\n").slice(0, 5).join(", ")}`) : pass(`uncommitted edits discarded${args.paths ? `: ${args.paths.join(", ")}` : ""} — files match the last commit`);
+  },
+  async restore_file(args, before, cwd) {
+    const d = (await quiet(["git", "diff", "--name-only", args.ref || "HEAD", "--", args.path], cwd)).out;
+    return d ? fail(`${args.path} still differs from ${args.ref || "HEAD"}`) : pass(`${args.path} matches ${args.ref || "HEAD"}`);
+  },
+  async clean(args, before, cwd) {
+    if (args.dry) return pass("listed only (dry run)");
+    // without dirs=true git keeps untracked FOLDERS; only loose files must be gone
+    const left = (await quiet(["git", "ls-files", "--others", "--directory", ...(args.ignored ? [] : ["--exclude-standard"])], cwd)).out.split(/\r?\n/).filter(Boolean);
+    const shouldBeGone = args.dirs ? left : left.filter((f) => !f.endsWith("/"));
+    if (shouldBeGone.length) return fail(`still untracked: ${shouldBeGone.slice(0, 5).join(", ")}`);
+    return pass(left.length ? `untracked files removed (untracked folders kept: ${left.slice(0, 3).join(", ")})` : "no untracked files left");
+  },
+  async remote_remove(args, before, cwd) {
+    return (await quiet(["git", "remote", "get-url", args.name], cwd)).ok ? fail(`remote ${args.name} still exists`) : pass(`remote ${args.name} removed`);
+  },
+  async remote_rename(args, before, cwd) {
+    return (await quiet(["git", "remote", "get-url", args.to], cwd)).ok ? pass(`remote renamed ${args.from} → ${args.to}`) : fail(`no remote named ${args.to}`);
+  },
+  async branch_rename(args, before, cwd) {
+    const has = async (b) => (await quiet(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${b}`], cwd)).ok;
+    if (!(await has(args.to))) return fail(`no branch named ${args.to}`);
+    if (args.from && (await has(args.from))) return fail(`old branch ${args.from} still exists`);
+    return pass(`branch is now called ${args.to}`);
+  },
+  async tag_delete(args, before, cwd) {
+    return (await quiet(["git", "rev-parse", "--verify", "--quiet", `refs/tags/${args.name}`], cwd)).ok ? fail(`tag ${args.name} still exists`) : pass(`tag ${args.name} deleted locally`);
+  },
+  async stash_drop(args, before, cwd) {
+    const n = (await snapshot(cwd)).stashes.length;
+    return n < (before.stashes?.length || 0) || (args.all && n === 0) ? pass(args.all ? "all stashes cleared" : "stash dropped") : fail("stash is still there");
+  },
+  async set_identity(args, before, cwd) {
+    const bad = [];
+    if (args.name && (await cfg(cwd, "user.name", args.global)) !== args.name) bad.push("name");
+    if (args.email && (await cfg(cwd, "user.email", args.global)) !== args.email) bad.push("email");
+    return bad.length ? fail(`git ${bad.join(" and ")} not set`) : pass(`git identity: ${[args.name, args.email].filter(Boolean).join(" <") + (args.email && args.name ? ">" : "")}`);
+  },
+  async config_set(args, before, cwd) {
+    return (await cfg(cwd, args.key, args.global)) === args.value ? pass(`${args.key} = ${args.value}`) : fail(`${args.key} is not ${args.value}`);
+  },
+  async gitignore_add(args, before, cwd) {
+    const root = before.root || cwd;
+    const text = fs.existsSync(path.join(root, ".gitignore")) ? fs.readFileSync(path.join(root, ".gitignore"), "utf8") : "";
+    const lines = new Set(text.split(/\r?\n/).map((l) => l.trim()));
+    const missing = args.patterns.filter((p) => !lines.has(p));
+    return missing.length ? fail(`not in .gitignore: ${missing.join(", ")}`) : pass(`.gitignore has ${args.patterns.join(", ")}`);
+  },
+  async move_file(args, before, cwd) {
+    return fs.existsSync(path.resolve(cwd, args.to)) && !fs.existsSync(path.resolve(cwd, args.from)) ? pass(`${args.from} → ${args.to}`) : fail(`${args.to} missing or ${args.from} still there`);
+  },
+  async remove_file(args, before, cwd) {
+    const left = args.paths.filter((p) => fs.existsSync(path.resolve(cwd, p)));
+    return left.length ? fail(`still on disk: ${left.join(", ")}`) : pass(`deleted: ${args.paths.join(", ")}`);
+  },
+  async clone(args, before, cwd) {
+    const dir = path.resolve(cwd, args.dir || args.url.split(/[\\/:]/).pop().replace(/\.git$/, ""));
+    if (!fs.existsSync(path.join(dir, ".git"))) return fail(`no repository at ${dir}`);
+    if (args.depth) {
+      const n = +(await quiet(["git", "rev-list", "--count", "HEAD"], dir)).out;
+      if (n > args.depth) return fail(`cloned into ${dir}, but it has ${n} commits — not a depth-${args.depth} shallow clone`);
+    }
+    if (args.branch && (await quiet(["git", "branch", "--show-current"], dir)).out !== args.branch) return fail(`cloned, but not on branch ${args.branch}`);
+    return pass(`cloned into ${dir}${args.depth ? ` (shallow, depth ${args.depth})` : ""}${args.branch ? ` on ${args.branch}` : ""}`);
+  },
+  async note_add(args, before, cwd) {
+    const n = await quiet(["git", "notes", "show", args.ref || "HEAD"], cwd);
+    return n.ok && n.out.includes(args.message) ? pass(`note on ${args.ref || "HEAD"}: "${args.message}"`) : fail("the note is not there");
+  },
+  async gh_repo_clone(args, before, cwd) {
+    return VERIFIERS.clone({ url: args.repo, dir: args.dir }, before, cwd);
+  },
+  async worktree_add(args, before, cwd) {
+    return fs.existsSync(path.resolve(cwd, args.path)) ? pass(`worktree at ${args.path} (${args.branch})`) : fail(`no worktree folder at ${args.path}`);
+  },
+  async archive(args, before, cwd) {
+    const format = args.format || (/\.tar$/.test(args.output || "") ? "tar" : "zip");
+    const file = path.resolve(cwd, args.output || `archive.${format}`);
+    return fs.existsSync(file) && fs.statSync(file).size > 0 ? pass(`${file} written (${fs.statSync(file).size} bytes)`) : fail(`no archive at ${file}`);
+  },
+  async delete_remote_tag(args, before, cwd) {
+    const r = await quiet(["git", "ls-remote", "--tags", args.remote || "origin", `refs/tags/${args.name}`], cwd);
+    if (!r.ok) return unknown("could not reach the remote to confirm");
+    return r.out ? fail(`tag ${args.name} still exists on the remote`) : pass(`tag ${args.name} no longer exists on the remote`);
+  },
+  async add(args, before, cwd) {
+    // everything requested is staged: no unstaged edits and no untracked files left for those paths
+    const scope = args.all || !args.paths ? ["."] : args.paths;
+    const unstaged = (await quiet(["git", "diff", "--name-only", "--", ...scope], cwd)).out;
+    const untracked = (await quiet(["git", "ls-files", "--others", "--exclude-standard", "--", ...scope], cwd)).out;
+    const left = [unstaged, untracked].filter(Boolean).join("\n");
+    if (left) return fail(`not staged: ${left.split("\n").slice(0, 5).join(", ")}`);
+    const staged = (await quiet(["git", "diff", "--cached", "--name-only"], cwd)).out.split("\n").filter(Boolean);
+    return pass(staged.length ? `staged: ${staged.slice(0, 6).join(", ")}${staged.length > 6 ? ` (+${staged.length - 6})` : ""}` : "nothing to stage");
+  },
+  async recover_commit(args, before, cwd, ctx) {
+    const subject = (String(ctx.output).match(/subject: (.+)/) || [])[1]?.trim();
+    if (!subject) return fail("no matching commit was found");
+    const recent = (await quiet(["git", "log", "-30", "--format=%s"], cwd)).out.split(/\r?\n/);
+    return recent.includes(subject) ? pass(`"${subject}" is back on ${(await snapshot(cwd)).branch}`) : fail(`"${subject}" is not on the current branch`);
+  },
+  async stash_apply(args, before, cwd) {
+    return (await quiet(["git", "status", "--porcelain"], cwd)).out ? pass("stashed changes are back in your working tree (stash kept)") : fail("nothing was restored");
+  },
+  async unstage(args, before, cwd) {
+    const staged = (await quiet(["git", "diff", "--cached", "--name-only", "--", ...(args.paths || ["."])], cwd)).out;
+    return staged ? fail(`still staged: ${staged.split("\n").slice(0, 5).join(", ")}`) : pass(`nothing staged${args.paths ? ` for ${args.paths.join(", ")}` : ""}; edits kept`);
+  },
+  async gh_pr_checkout(args, before, cwd) {
+    const b = (await snapshot(cwd)).branch;
+    return b && b !== before.branch ? pass(`checked out PR #${args.number} on branch ${b}`) : fail("still on the same branch");
+  },
+});
+
+/** Verifier for a raw `git …` command, when it maps to a known post-condition. */
+export async function verifyRaw(argv, before, cwd) {
+  const sub = argv[1];
+  if (argv[0] !== "git") return null;
+  if (sub === "push" && !argv.includes("--delete") && !argv.includes("-d") && !argv.includes("--tags")) return verifyPushed(cwd);
+  if (sub === "commit") return VERIFIERS.commit({}, before, cwd);
+  return null;
+}
+
 export const hasVerifier = (opId) => Object.hasOwn(VERIFIERS, opId);
+
+/**
+ * Ops whose check describes a GOAL STATE ("branch x is gone", "main is on the
+ * remote"). Only these may turn a failed command into "already the case".
+ * Ops that must CREATE something (commit, revert, stash, undo…) never qualify:
+ * if the command failed, the new thing does not exist.
+ */
+const GOAL_STATE = new Set([
+  "push", "sync", "pull", "push_tags", "delete_remote_branch", "branch_create", "branch_delete", "switch", "tag_create", "tag_delete",
+  "remote_add", "remote_set_url", "remote_remove", "init", "untrack", "gitignore_add", "set_identity", "config_set", "discard", "restore_file",
+  "clone", "gh_repo_clone", "gh_switch_account", "gh_repo_create", "gh_pr_create", "gh_pr_merge", "gh_pr_close", "gh_issue_close",
+  "gh_release_create", "gh_repo_visibility", "branch_rename", "delete_remote_tag", "unstage",
+]);
+export const canBeAlreadyTrue = (opId) => GOAL_STATE.has(opId);
 
 /** State captured before a step, so verifiers can compare. */
 export async function captureBefore(cwd, snap) {

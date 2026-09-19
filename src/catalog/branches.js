@@ -6,7 +6,7 @@ const finishCmd = (what) => (what === "merge" ? ["git", "commit", "--no-edit"] :
 export default [
   {
     id: "branch_create",
-    desc: "create a branch (from=start point) and switch to it unless stay=true",
+    desc: "create a branch (from=start point). Switches to it, unless stay=true (\"without switching\", \"but stay here\")",
     params: { name: "str!", from: "str", stay: "bool" },
     risk: "write",
     build: (p) => [p.stay ? ["git", "branch", p.name, ...(p.from ? [p.from] : [])] : ["git", "switch", "-c", p.name, ...(p.from ? [p.from] : [])]],
@@ -89,7 +89,7 @@ export default [
   },
   {
     id: "resolve_conflicts",
-    desc: "resolve conflicted files by taking one side (ours=current branch, theirs=incoming), stage them, and finish the merge once none remain",
+    desc: "resolve conflicted files by taking one side: ours = MY/current branch version, theirs = THEIR/incoming version. Stages them and finishes the merge once none remain",
     params: { side: "ours|theirs!", paths: "list" },
     risk: "danger",
     warn: (p) => `The other side's version of conflicted lines is dropped (keeping ${p.side}).`,

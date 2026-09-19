@@ -94,13 +94,16 @@ export async function snapshot(cwd) {
     return { isRepo: false, cwd, root: "", branch: "", remotes: [], remoteUrls: {}, branches: [], hasCommits: false, ...gh };
   }
   const [root, gitDir] = inside.split(/\r?\n/);
-  const [statusText, branchesText, remotesText, stashText, logText, tagsText] = await Promise.all([
+  const [statusText, branchesText, remotesText, stashText, logText, tagsText, countText] = await Promise.all([
     q(["git", "status", "--porcelain=v2", "--branch"], cwd),
-    q(["git", "for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads", "refs/remotes"], cwd),
+    // full refnames: %(refname:short) turns refs/remotes/origin/HEAD into a bare
+    // "origin", which then looked like a LOCAL branch called "origin"
+    q(["git", "for-each-ref", "--format=%(refname)", "--sort=-committerdate", "refs/heads", "refs/remotes"], cwd),
     q(["git", "remote", "-v"], cwd),
     q(["git", "stash", "list", "--format=%gd %s"], cwd),
     q(["git", "log", "-5", "--format=%h %s"], cwd),
     q(["git", "tag", "--sort=-creatordate"], cwd),
+    q(["git", "rev-list", "--count", "HEAD"], cwd),
   ]);
   const st = parseStatus(statusText);
   const remoteUrls = {};
@@ -110,9 +113,8 @@ export async function snapshot(cwd) {
   }
   const remotes = Object.keys(remoteUrls);
   const refs = branchesText ? branchesText.split(/\r?\n/) : [];
-  const remotePrefixes = remotes.map((r) => r + "/");
-  const branches = refs.filter((b) => !remotePrefixes.some((p) => b.startsWith(p)));
-  const remoteBranches = refs.filter((b) => remotePrefixes.some((p) => b.startsWith(p)) && !b.endsWith("/HEAD"));
+  const branches = refs.filter((r) => r.startsWith("refs/heads/")).map((r) => r.slice(11));
+  const remoteBranches = refs.filter((r) => r.startsWith("refs/remotes/") && !r.endsWith("/HEAD")).map((r) => r.slice(13));
   const upstreamRemote = st.upstream ? st.upstream.split("/")[0] : "";
   return {
     isRepo: true,
@@ -120,7 +122,9 @@ export async function snapshot(cwd) {
     root,
     gitDir,
     ...st,
-    hasCommits: st.oid && st.oid !== "(initial)",
+    hasCommits: !!st.oid && st.oid !== "(initial)",
+    commitCount: parseInt(countText, 10) || 0,
+    defaultBranch: branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0] || "main",
     inProgress: inProgressState(gitDir),
     branches,
     remoteBranches,

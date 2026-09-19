@@ -11,7 +11,9 @@ failures. That is what keeps a 4B-parameter local model accurate and fast.
 bin/gitcat.js            entry point: flags, provider detection, headless vs TUI
 src/agent/               the brain (UI-agnostic)
   agent.js               route → plan → confirm → run → debug → explain
-  router.js              zero-token fast path (exact phrases, raw git/gh, cd)
+  router.js              zero-token fast path (exact phrases, raw git/gh, cd, "did you push?")
+  intent.js              user's words correct the plan's risky/ambiguous parameters
+  verify.js              post-condition checks: "done" only when the real state says so
   prompt.js              system prompt (full for local, slim for Groq) + debug/commit prompts
   context.js             repo snapshot (porcelain v2) + gh accounts from hosts.yml
   knownErrors.js         deterministic diagnosis/fixes for common git failures
@@ -19,7 +21,7 @@ src/agent/               the brain (UI-agnostic)
 src/catalog/             the "boilerplate": ~95 ops, each = params + risk + build()
 src/exec/run.js          execa wrapper: no shell, no pager/editor/prompt, colors on
 src/llm/index.js         Ollama + Groq behind one chat(), fallback order, warmup
-src/ui/                  Ink (React) terminal UI: App, header, cat, prompt, confirm
+src/ui/                  Ink (React) terminal UI: App, header, always-on animated cat dock, prompt, confirm
 src/headless.js          `gitcat -p "..."` one-shot mode (scripts, tests)
 src/config/settings.js   .env loading, ~/.gitcat settings + history
 scripts/eval.js          planner accuracy/latency against the real models
@@ -34,6 +36,7 @@ test/                    node:test suites (catalog, parsing, agent e2e, TUI)
 | Router | exact phrases like `push`, raw `git …`, `cd …` → steps with no model call | `src/agent/router.js` `fastRoute()` |
 | Planner | one model call → `{reply, steps:[{op,args}], ask, explain}`; validates every step with `resolveStep`, one repair round if invalid | `src/agent/agent.js` `askModel()` |
 | Catalog | op ids, param specs (`"str!"`, `"bool"`, `"a|b"`), risk tier, `build(args, ctx) → argv[]` | `src/catalog/index.js` `resolveStep()`, `buildCommands()` |
+| Intent guard | corrects parameters from the user's words (merge direction, ours/theirs, reset mode, PR "it"), strips unrequested force/hard/public/global, asks on vague deletes | `src/agent/intent.js` `applyIntentGuards()` |
 | Executor | confirm policy by mode × risk, re-snapshot between steps, auto commit message, internal steps (`.gitignore`, `cd`), then a post-condition check per step (`verify.js`) — "done" only when verified | `agent.js` `execute()` |
 | Debugger | known-error table first (instant), else model diagnosis; fix plan always confirmed; max 2 rounds | `agent.js` `debug()` + `knownErrors.js` |
 | LLM | provider order, slim prompt for Groq, Ollama KV-cache warmup | `src/llm/index.js` `chat()` |
@@ -49,7 +52,7 @@ flowchart TD
   R -- no --> P[model: pick ops from catalog + args]
   P --> V{valid ops and args?}
   V -- no --> P2[one repair round with the exact error] --> X
-  V -- yes --> X[build argv per step]
+  V -- yes --> G[intent guard: user's words fix parameters] --> X[build argv per step]
   X --> C{needs confirm? mode × risk}
   C -- declined --> E[nothing runs]
   C -- ok --> RUN[run step, re-snapshot before next]
@@ -70,9 +73,9 @@ snapshot were skipped, the second step would push the old branch.
 
 ```mermaid
 flowchart LR
-  E[edit src/] --> T[npm test — 56 tests]
+  E[edit src/] --> T[npm test — 73 tests]
   T --> EV[node scripts/eval.js ollama — accuracy must not drop]
-  EV --> E2[node scripts/e2e.js ollama — 18 real scenarios]
+  EV --> E2[node scripts/journey.js — 73 real-user prompts, 0 lies]
   E2 --> D[python check_docs.py --write]
   D --> C[commit]
 ```

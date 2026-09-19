@@ -133,8 +133,57 @@ export async function listOllamaModels(settings) {
   }
 }
 
+/**
+ * Balance brackets in almost-JSON: drop closers that don't match the open
+ * bracket (small models emit `"args":{}}}` — one brace too many — and repeat it
+ * deterministically, so asking again doesn't help), drop trailing commas, and
+ * close anything left open. Strings are copied untouched.
+ */
+export function repairJson(text) {
+  const s = String(text || "").replace(/```(?:json)?/gi, "");
+  const start = s.indexOf("{");
+  if (start < 0) throw new Error("no JSON object in reply");
+  const stack = [];
+  let out = "";
+  let inStr = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      out += ch;
+      if (ch === "\\") out += s[++i] ?? "";
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") {
+      if (stack.at(-1) !== (ch === "}" ? "{" : "[")) continue; // unmatched closer: drop it
+      stack.pop();
+      out = out.replace(/,\s*$/, ""); // trailing comma before a closer
+      out += ch;
+      if (!stack.length) break;
+      continue;
+    }
+    out += ch;
+  }
+  while (stack.length) out = out.replace(/,\s*$/, "") + (stack.pop() === "{" ? "}" : "]");
+  return JSON.parse(out);
+}
+
 /** Pull the first JSON object out of a model reply (handles ```json fences and stray prose). */
 export function extractJson(text) {
+  try {
+    return strictExtract(text);
+  } catch (e) {
+    try {
+      return repairJson(text);
+    } catch {
+      throw e;
+    }
+  }
+}
+
+function strictExtract(text) {
   const s = String(text || "").replace(/```(?:json)?/gi, "");
   const start = s.indexOf("{");
   if (start < 0) throw new Error("no JSON object in reply");

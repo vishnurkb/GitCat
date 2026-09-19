@@ -114,3 +114,53 @@ test("router: push-status questions go to sync_check", () => {
   }
   assert.equal(fastRoute("push the current dir to github repo"), null);
 });
+
+test("intent guard: user's words override risky or wrong parameters", async () => {
+  const { applyIntentGuards } = await import("../src/agent/intent.js");
+  const { resolveStep } = await import("../src/catalog/index.js");
+  const one = (req, op, args) => applyIntentGuards(req, [resolveStep({ op, args })]).steps[0];
+  assert.equal(one("keep their version and finish the merge", "resolve_conflicts", { side: "ours" }).args.side, "theirs");
+  assert.equal(one("keep my version", "resolve_conflicts", { side: "theirs" }).args.side, "ours");
+  assert.equal(one("create bugfix/cart without switching to it", "branch_create", { name: "bugfix/cart" }).args.stay, true);
+  assert.equal(one("throw away my last commit completely", "undo_commit", {}).args.discard, true);
+  assert.equal(one("undo the last commit", "reset", { ref: "HEAD~1", mode: "hard" }).args.mode, "mixed");
+  assert.equal(one("undo the last commit and unstage the changes too, but keep the file", "undo_commit", {}).args.unstage, true);
+  assert.equal(one("bring my unfinished work back", "stash_apply", {}).op.id, "stash_pop");
+  assert.equal(one("apply that stash but keep it in the list", "stash_pop", {}).op.id, "stash_apply");
+  assert.equal(one("put this on github", "gh_repo_create", { visibility: "public" }).args.visibility, "private");
+  assert.equal(one("put this on github as a public repo", "gh_repo_create", { visibility: "public" }).args.visibility, "public");
+  assert.equal(one("push my work", "push", { force: true }).args.force, undefined);
+  assert.equal(one("force push", "push", { force: true }).args.force, true);
+  assert.equal(one("delete the old branch", "branch_delete", { name: "old", force: true }).args.force, undefined);
+  assert.equal(one("set my email for this repo", "set_identity", { email: "a@b.c", global: true }).args.global, undefined);
+  assert.equal(one("set my email globally", "set_identity", { email: "a@b.c", global: true }).args.global, true);
+});
+
+test("intent guard: merge direction, vague deletes, remote tag delete, commit-by-message", async () => {
+  const { applyIntentGuards } = await import("../src/agent/intent.js");
+  const { resolveStep } = await import("../src/catalog/index.js");
+  const plan = (...s) => s.map(([op, args]) => resolveStep({ op, args }));
+  const snap = { branch: "main", branches: ["main", "dev", "hotfix"], remoteBranches: [] };
+  // model merged the WRONG way round (on dev, merging main)
+  let g = applyIntentGuards("merge dev into main", plan(["switch", { branch: "dev" }], ["merge", { branch: "main" }]), snap);
+  assert.deepEqual(g.steps.map((s) => [s.op.id, s.args.branch]), [["merge", "dev"]]);
+  g = applyIntentGuards("merge dev into main", plan(["merge", { branch: "dev" }]), { ...snap, branch: "hotfix" });
+  assert.deepEqual(g.steps.map((s) => [s.op.id, s.args.branch]), [["switch", "main"], ["merge", "dev"]]);
+  // vague destructive request -> ask, run nothing
+  g = applyIntentGuards("delete it", plan(["branch_delete", { name: "dev" }]), snap);
+  assert.equal(g.steps.length, 0);
+  assert.match(g.ask, /Name it/);
+  assert.equal(applyIntentGuards("delete the dev branch", plan(["branch_delete", { name: "dev" }]), snap).steps.length, 1);
+  // "delete the tag on the remote" must not push it
+  g = applyIntentGuards("delete the tag v1 locally and on the remote", plan(["tag_delete", { name: "v1" }], ["push_tags", { name: "v1" }]), snap);
+  assert.equal(g.steps[1].op.id, "delete_remote_tag");
+  // commit named by message, model passed the branch
+  g = applyIntentGuards("copy only the 'critical hotfix' commit from hotfix onto main", plan(["cherry_pick", { refs: ["hotfix"] }]), snap);
+  assert.deepEqual(g.steps[0].args.refs, [":/critical hotfix"]);
+});
+
+test("extractJson repairs the model's real-world bracket slip", () => {
+  const bad = '{"reply":"x","steps":[{"op":"tag_create","args":{"name":"v1"}},{"op":"push_tags","args":{}}},{"op":"gh_release_create","args":{"tag":"v1"}}],"ask":"","explain":false}';
+  assert.deepEqual(extractJson(bad).steps.map((s) => s.op), ["tag_create", "push_tags", "gh_release_create"]);
+  assert.deepEqual(extractJson('{"a":[1,2,],"b":{"c":"}"'), { a: [1, 2], b: { c: "}" } });
+});

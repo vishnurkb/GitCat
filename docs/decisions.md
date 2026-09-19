@@ -2,6 +2,17 @@
 
 Append-only, newest first.
 
+## 2026-09-20 — Deterministic intent guard on top of the model's plan
+**Context:** A 73-prompt user-journey test (plain-English requests built from a developer's git cheat-sheet, judged by independent git/`gh api` checks) found the 4B model picks the right *operation* but slips on *parameters* that matter: "merge dev into main" ran as `switch dev; merge main` (reversed), "keep THEIR version" became `--ours`, "delete it" deleted a branch and a remote, "delete the tag on the remote" became `push` of the tag, cherry-picking a commit named by message used the branch tip.
+**Decision:** `src/agent/intent.js` reads the user's actual words after planning and corrects those parameters (merge direction, conflict side, stay/switch, soft/mixed/hard, pop/apply, PR "it" from recent turns, commit-by-message via git's `:/text`), strips dangerous flags nobody asked for (public, `--force`, `--hard`, `-D`, `--global`), and turns vague destructive requests ("delete it") into a question. Every correction is shown to the user.
+**Result:** journey 54/63 with 7 lies → 73/73 (incl. real GitHub PR/issue/release), 0 lies; stable on a second run.
+**Also from that audit:** phantom `origin` branch in every clone (refname:short of origin/HEAD), undo on the first commit, commits without a message, commit messages that only saw the first 7k chars of the diff, PRs opened before unpushed commits were pushed, `pull` blocked by local edits (`--autostash`), `--depth` silently ignored for local paths, a failed commit "verified" because `rev-parse HEAD` prints the literal `HEAD` in an unborn repo, and the model's JSON with one extra `}` (now repaired before giving up).
+**Trade-off:** English phrase rules; other languages rely on the model alone (Hinglish test passed via the model).
+
+## 2026-09-20 — Always-on animated cat dock
+**Context:** The user wanted a cat that is always visible, animates, and shows what the agent is doing.
+**Decision:** `src/ui/cat.js` composes frames from parts (ears, eyes, mouth, body, tail) plus props per mood (thought bubble, laptop, magnifier, sparkles, zzz, rain); `CatDock` owns an ~8 fps timer so only the dock re-renders, decides the mood every frame (so "hello", success/sad reactions and napping expire on their own), and describes the current step in plain words. Verified in a real ConPTY terminal: 12 distinct frames in 4.8 s idle; all phases shown during a request.
+
 ## 2026-09-19 — "Done" requires a verified post-condition, not exit code 0
 **Context:** The user's rule: the agent must never say yes unless the work really happened. Exit code 0 is not proof (`gh repo create` without `--push` exits 0 and leaves an empty repo).
 **Decision:** `src/agent/verify.js` checks the real state after every state-changing step — `git ls-remote` for pushes/tags/branches (the remote itself, not the local tracking ref), `gh … --json` for repos/PRs/issues/releases, hosts.yml for account switches. Only verified steps produce "Done — verified"; unreachable checks produce "could NOT confirm"; failed checks produce "Request NOT completed". A failed command whose goal state is already true (branch already deleted) is reported as "already the case" — again only if the check passes.

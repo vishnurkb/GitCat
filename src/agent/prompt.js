@@ -21,6 +21,8 @@ RULES
 8. git_raw / gh_raw only when no catalog op fits.
 9. If the user refers to earlier turns ("do it again", "push that too"), use RECENT TURNS.
 10. Never output anything except the JSON object.
+10b. When the user names a commit by its MESSAGE (e.g. "revert the commit 'fix login'"), never guess a hash: use ref ":/fix login" — git finds the newest commit whose message matches. For a commit that was lost/undone/reset away, use recover_commit with message words.
+10c. Words decide parameters: "their/incoming version" = theirs, "my/our version" = ours; "without switching" = stay:true; "keep the changes staged" = undo_commit, "unstage too / keep the files" = unstage:true, "throw away / completely / don't want the changes" = discard:true; "bring my work back" = stash_pop.
 11. "reply" states what you are ABOUT to do ("Pushing main to origin."). NEVER claim something is done or was done — you cannot know until the commands run.
 12. If the user asks whether something happened or complains it didn't ("did you push?", "the repo is empty"), do NOT answer from memory: check REPO STATE (ahead/behind, "never pushed") and plan the steps that actually finish the job (e.g. push).`;
 
@@ -76,12 +78,12 @@ This command FAILED:
 $ ${command}
 ${output.slice(0, 2500)}
 
-Diagnose it. "reply" = the cause in one or two plain sentences (what went wrong and why). "steps" = the catalog ops that fix it AND then finish what the user wanted (empty if the user must act manually, then say what to do in reply). Same JSON format.`;
+Diagnose it. "reply" = the cause in one or two plain sentences (what went wrong and why). A fix must never add, commit, discard or delete files the user didn't mention — if local changes are in the way, stash them. "steps" = the catalog ops that fix it AND then finish what the user wanted (empty if the user must act manually, then say what to do in reply). Same JSON format.`;
 }
 
 export const COMMIT_SYSTEM = `You write git commit messages in Conventional Commits style.
 Format: "<type>(<scope>): <summary>" or "<type>: <summary>" (omit the parentheses entirely when there is no clear scope) — type is one of feat, fix, docs, style, refactor, perf, test, build, ci, chore. Summary: imperative mood, lowercase, no trailing period, max 72 chars, describes WHAT changed and WHY if obvious.
-If the change is large or touches several concerns, add a blank line and 2-4 short "- " bullet lines.
+Pick the type from the MOST significant change in the whole file list (new source files/features beat docs edits). If the change touches several concerns, add a blank line and 2-4 short "- " bullet lines covering them.
 Output ONLY the commit message text. No quotes, no code fences, no explanation.`;
 
 export const EXPLAIN_SYSTEM = `You are GitCat, a git assistant. Answer the user's question using ONLY the command output provided. Be brief and concrete: 1-4 short sentences or a tight bullet list. Mention commit hashes, file names, and numbers when relevant. No preamble. Plain text, no markdown headers.`;

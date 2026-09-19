@@ -122,7 +122,7 @@ test("debugger: rejected push -> pull --rebase + push, then succeeds", async () 
   assert.match(diag.text, /remote has commits/);
   assert.equal(h.confirms[0].title, "Apply this fix?");
   const cmds = h.cmds().map((c) => `${c.ok ? "ok" : "FAIL"} ${c.command}`);
-  assert.deepEqual(cmds, ["FAIL git push", "ok git pull --rebase", "ok git push"]);
+  assert.deepEqual(cmds, ["FAIL git push", "ok git pull --rebase --autostash", "ok git push"]);
   assert.equal(git(dir, "rev-parse", "HEAD"), git(dir, "rev-parse", "origin/main"));
   assert.ok(fs.existsSync(path.join(dir, "o.txt")));
 });
@@ -420,4 +420,152 @@ test("failed commit is never rescued by 'already the case'", async () => {
   fs.writeFileSync(path.join(dir, "u.txt"), "u\n"); // untracked only -> "nothing added to commit"
   await h.agent.handle("commit");
   assert.ok(!h.items.some((i) => i.type === "summary" && i.ok === true && !h.items.some((j) => j.type === "verify" && j.ok === true && /commit .* created/.test(j.text))));
+});
+
+// ---- audit fixes (2026-09-19, round 3) ------------------------------------
+
+test("audit #1: cloned repos don't show a phantom local branch named 'origin'", async () => {
+  const src = makeRepo("phantomsrc");
+  const clone = path.join(ROOT, "phantomclone");
+  git(ROOT, "clone", "-q", path.join(ROOT, "phantomsrc.git"), clone);
+  const { snapshot } = await import("../src/agent/context.js");
+  const s = await snapshot(clone);
+  assert.deepEqual(s.branches, ["main"]);
+  assert.deepEqual(s.remoteBranches, ["origin/main"]);
+  void src;
+});
+
+test("audit #2: undo the ONLY commit keeps the files staged", async () => {
+  const dir = makeRepo("undofirst", { remote: false });
+  const h = harness(dir, []);
+  await h.agent.handle("undo last commit");
+  assert.match(h.cmds()[0].command, /git update-ref -d HEAD/);
+  assert.equal(h.items.find((i) => i.type === "verify").ok, true);
+  assert.match(git(dir, "status", "--porcelain"), /^A  a\.txt/m);
+});
+
+test("audit #3: a commit always gets a message, even on an unborn repo with commit{all}", async () => {
+  const dir = path.join(ROOT, "unborn");
+  fs.mkdirSync(dir);
+  git(dir, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(dir, "x.txt"), "x\n");
+  const h = harness(dir, [{ steps: [{ op: "commit", args: { all: true } }] }]);
+  await h.agent.handle("commit everything");
+  assert.equal(git(dir, "rev-list", "--count", "HEAD"), "1");
+  assert.ok(git(dir, "log", "-1", "--format=%s").length > 0);
+});
+
+test("audit #4: commit message input lists EVERY changed file", async () => {
+  const dir = makeRepo("allfiles", { remote: false });
+  for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(dir, `f${i}.md`), "x\n".repeat(400));
+  fs.writeFileSync(path.join(dir, "zz_feature.js"), "export const feature = () => 42\n");
+  git(dir, "add", "-A");
+  const { diffFor } = await import("../src/agent/commitMessage.js");
+  const { OP_BY_ID } = await import("../src/catalog/index.js");
+  const d = await diffFor(OP_BY_ID.get("commit"), {}, dir);
+  assert.match(d, /zz_feature\.js/);
+  assert.match(d, /feature = \(\) => 42/, "the feature file's content must be visible, not cut off by the docs");
+});
+
+test("audit #6: deleting the branch you're on switches to main first", async () => {
+  const dir = makeRepo("delcurrent", { remote: false });
+  git(dir, "switch", "-q", "-c", "old");
+  const h = harness(dir, [{ steps: [{ op: "branch_delete", args: { name: "old" } }] }]);
+  await h.agent.handle("delete the old branch");
+  assert.equal(git(dir, "branch", "--show-current"), "main");
+  assert.ok(!git(dir, "branch", "--format=%(refname:short)").split("\n").includes("old"));
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("audit #7: switching branches with blocking local edits stashes, switches, restores", async () => {
+  const dir = makeRepo("stashswitch", { remote: false });
+  git(dir, "switch", "-q", "-c", "dev");
+  fs.writeFileSync(path.join(dir, "a.txt"), "dev\n");
+  git(dir, "commit", "-qam", "dev");
+  git(dir, "switch", "-q", "main");
+  fs.writeFileSync(path.join(dir, "a.txt"), "local edit\n"); // conflicts with dev's a.txt
+  const h = harness(dir, [{ steps: [{ op: "switch", args: { branch: "dev" } }] }]);
+  await h.agent.handle("switch to dev");
+  assert.equal(git(dir, "branch", "--show-current"), "dev");
+  assert.ok(h.cmds().some((c) => /stash push/.test(c.command)), "must stash first");
+  assert.ok(h.cmds().some((c) => /stash pop/.test(c.command)), "must restore after");
+});
+
+test("audit #8: raw 'git push' is verified against the remote", async () => {
+  const dir = makeRepo("rawpush");
+  fs.writeFileSync(path.join(dir, "r.txt"), "r\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "r");
+  const h = harness(dir, []);
+  await h.agent.handle("git push");
+  assert.match(h.items.find((i) => i.type === "verify").text, /confirmed on the remote/);
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("audit #8: a write with no independent check is NOT reported as verified done", async () => {
+  const dir = makeRepo("unchecked", { remote: false });
+  const h = harness(dir, [{ steps: [{ op: "git_raw", args: { command: "notes add -m hello" } }] }]);
+  await h.agent.handle("add a note");
+  assert.equal(summaryOf(h).ok, null);
+  assert.match(summaryOf(h).text, /no independent check/);
+});
+
+test("audit #9: a reply claiming work with no steps is replaced", async () => {
+  const dir = makeRepo("claims", { remote: false });
+  const h = harness(dir, [{ reply: "Yes, I pushed everything to GitHub.", steps: [] }]);
+  await h.agent.handle("did it all go up?");
+  const said = h.items.find((i) => i.type === "agent").text;
+  assert.doesNotMatch(said, /I pushed/);
+  assert.match(said, /can't confirm/);
+});
+
+test("audit #10: PR/issue links from one turn are remembered for the next", async () => {
+  const dir = makeRepo("links", { remote: false });
+  const h = harness(dir, [{ steps: [{ op: "git_raw", args: { command: "log -1 --format=https://github.com/me/app/pull/7" } }] }]);
+  await h.agent.handle("show me the thing");
+  assert.match(h.agent.state.turns.at(-1), /created\/used: https:\/\/github\.com\/me\/app\/pull\/7/);
+});
+
+test("recover_commit finds a hard-reset commit in the reflog by its message and restores it", async () => {
+  const dir = makeRepo("recover", { remote: false });
+  fs.writeFileSync(path.join(dir, "lost.txt"), "precious\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "precious work");
+  const sha = git(dir, "rev-parse", "HEAD");
+  git(dir, "reset", "-q", "--hard", "HEAD~1");
+  const h = harness(dir, [{ steps: [{ op: "recover_commit", args: { message: "precious work" } }] }]);
+  await h.agent.handle("I lost my 'precious work' commit, bring it back");
+  assert.equal(git(dir, "rev-parse", "HEAD"), sha);
+  assert.ok(fs.existsSync(path.join(dir, "lost.txt")));
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("discard removes staged AND unstaged edits, verified", async () => {
+  const dir = makeRepo("discardboth", { remote: false });
+  fs.writeFileSync(path.join(dir, "a.txt"), "changed\n");
+  fs.writeFileSync(path.join(dir, "new.txt"), "new\n");
+  git(dir, "add", "new.txt");
+  const h = harness(dir, [{ steps: [{ op: "discard", args: {} }] }]);
+  await h.agent.handle("throw away all my changes");
+  assert.equal(git(dir, "status", "--porcelain"), "");
+  assert.equal(summaryOf(h).ok, true);
+});
+
+test("intent guard is applied end to end (their version)", async () => {
+  const dir = makeRepo("guardtheirs", { remote: false });
+  git(dir, "switch", "-q", "-c", "dev");
+  fs.writeFileSync(path.join(dir, "a.txt"), "theirs\n");
+  git(dir, "commit", "-qam", "dev");
+  git(dir, "switch", "-q", "main");
+  fs.writeFileSync(path.join(dir, "a.txt"), "ours\n");
+  git(dir, "commit", "-qam", "main");
+  try {
+    git(dir, "merge", "dev");
+  } catch {
+    /* conflict expected */
+  }
+  const h = harness(dir, [{ steps: [{ op: "resolve_conflicts", args: { side: "ours" } }] }]); // model gets it WRONG
+  await h.agent.handle("keep their version and finish the merge");
+  assert.equal(fs.readFileSync(path.join(dir, "a.txt"), "utf8").replace(/\r/g, ""), "theirs\n");
+  assert.ok(h.items.some((i) => i.type === "note" && /keeping theirs/.test(i.text)));
 });

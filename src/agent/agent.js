@@ -8,9 +8,10 @@ import { chat, extractJson } from "../llm/index.js";
 import { snapshot, contextText, resetGhCache } from "./context.js";
 import { fastRoute } from "./router.js";
 import { matchKnownError } from "./knownErrors.js";
-import { diffFor, writeCommitMessage } from "./commitMessage.js";
-import { hasVerifier, captureBefore, verifyStep } from "./verify.js";
+import { diffFor, writeCommitMessage, fallbackMessage } from "./commitMessage.js";
+import { hasVerifier, canBeAlreadyTrue, captureBefore, verifyStep, verifyRaw } from "./verify.js";
 import { SYSTEM_PROMPT, slimSystemPrompt, planMessage, debugMessage, EXPLAIN_SYSTEM } from "./prompt.js";
+import { applyIntentGuards } from "./intent.js";
 
 const RISK_RANK = { read: 0, write: 1, danger: 2 };
 const MAX_FIX_DEPTH = 2;
@@ -55,6 +56,16 @@ const NOTHING_TO_COMMIT = /nothing to commit, working tree clean/i;
 const CD_INTENT = /\b(cd|chdir|change (the )?(folder|dir|directory)|go to|move to|switch to (the )?(folder|dir|directory)|open (the )?(folder|dir|directory|repo) )/i;
 const isCommitCmd = (c) => Array.isArray(c) && c[0] === "git" && c[1] === "commit";
 
+// "I've pushed it", "Yes, it's been merged" — a claim about work. The model can't
+// know that; only commands + verification can. With no steps it's pure
+// invention; with steps it's premature (nothing has run yet).
+const CLAIM = /\b(i(?:'ve| have)?\s+(?:already\s+|successfully\s+|just\s+)?(?:pushed|committed|created|merged|deleted|opened|closed|published|uploaded|tagged|released|switched|reverted|fixed|resolved)|(?:has|have|was|were)\s+(?:been\s+)?(?:successfully\s+)?(?:pushed|committed|created|merged|deleted|uploaded|published)|\byes\b[^.]{0,40}\b(?:pushed|done|created|merged|committed|uploaded))\b/i;
+export function guardReply(reply, steps) {
+  if (!reply || !CLAIM.test(reply)) return reply;
+  if (!steps.length) return "I can't confirm that from memory — nothing was run just now. Ask me to check it (e.g. \"did you push?\") or tell me what to do.";
+  return `On it: ${[...new Set(steps.map((s) => s.op.id.replace(/_/g, " ")))].join(" → ")}.`;
+}
+
 const firstLine = (s) => stripAnsi(s || "").trim().split(/\r?\n/).find(Boolean) || "";
 
 /**
@@ -97,7 +108,11 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       extra.push({ role: "assistant", content: r.text || "{}" }, { role: "user", content: `${problem} Reply again with the corrected JSON object only.` });
       r = await llm(settings, messages, { json: true, signal, maxTokens: 800 });
       track(r);
-      parsed = extractJson(r.text);
+      try {
+        parsed = extractJson(r.text);
+      } catch {
+        throw new Error("The model's reply couldn't be understood (invalid JSON, twice) — nothing was run. Try rephrasing the request.");
+      }
     }
     const resolved = mergeDuplicates((parsed.steps || []).map((s) => resolveStep(s)));
     const good = resolved.filter((s) => !s.error);
@@ -136,6 +151,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     if (c.internal === "gitignore") return `edit .gitignore  (+ ${c.patterns.join(", ")})`;
     if (c.internal === "cd") return `cd ${c.path}`;
     if (c.internal === "sync_check") return "git fetch + compare branch with remote";
+    if (c.internal === "recover") return `find "${c.message || c.sha}" in the reflog and restore it`;
     return c.internal;
   }
 
@@ -158,7 +174,31 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       return { ok: true, exitCode: 0, stdout: `now in ${target}`, stderr: "", ms: 0 };
     }
     if (c.internal === "sync_check") return syncCheck(snap);
+    if (c.internal === "recover") return recoverCommit(c);
     return { ok: false, exitCode: 1, stdout: "", stderr: `unknown internal step ${c.internal}`, ms: 0 };
+  }
+
+  /** Find a lost commit in the reflog (by message words or hash) and bring it back without losing anything. */
+  async function recoverCommit({ message, sha }) {
+    const g = (argv) => run(["git", ...argv], { cwd: state.cwd, color: false });
+    const failed = (why) => ({ ok: false, exitCode: 1, stdout: "", stderr: why, ms: 0 });
+    let target = "";
+    if (sha) {
+      const r = await g(["rev-parse", "--verify", "--quiet", `${sha}^{commit}`]);
+      target = r.ok ? r.stdout.trim() : "";
+    } else if (message) {
+      const log = await g(["reflog", "--format=%H%x09%s"]);
+      const words = message.toLowerCase().split(/\s+/).filter(Boolean);
+      const line = log.stdout.split(/\r?\n/).find((l) => words.every((w) => l.split("\t")[1]?.toLowerCase().includes(w)));
+      target = line ? line.split("\t")[0] : "";
+    }
+    if (!target) return failed(`couldn't find a commit matching "${message || sha}" in the reflog`);
+    const subject = (await g(["log", "-1", "--format=%s", target])).stdout.trim();
+    if ((await g(["merge-base", "--is-ancestor", target, "HEAD"])).ok) return { ok: true, exitCode: 0, stdout: `already on this branch: ${target.slice(0, 7)} ${subject}\nsubject: ${subject}`, stderr: "", ms: 0 };
+    // fast-forward if the lost commit sits on top of HEAD (typical after a reset), else copy it with cherry-pick
+    const ff = (await g(["merge-base", "--is-ancestor", "HEAD", target])).ok;
+    const r = await run(["git", ...(ff ? ["merge", "--ff-only", target] : ["cherry-pick", target])], { cwd: state.cwd });
+    return { ...r, stdout: `${r.stdout}\nrestored ${target.slice(0, 7)} via ${ff ? "fast-forward" : "cherry-pick"}\nsubject: ${subject}` };
   }
 
   /** "Did it push?" answered by git, not by the model. */
@@ -197,6 +237,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     const outputs = [];
     const verified = [];
     const unverified = [];
+    const unchecked = []; // changes that ran but have no independent check
     for (let i = 0; i < steps.length; i++) {
       if (signal.aborted) return { ok: false, outputs, verified, unverified };
       const step = steps[i];
@@ -218,8 +259,9 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
           if (usage) track(usage);
           step.args = { ...step.args, message };
           ui.emit({ type: "commitmsg", text: message });
-        } else if (step.op.id === "squash_last") {
-          step.args = { ...step.args, message: "squash commits" };
+        } else {
+          // nothing staged to describe: still never run `git commit` without -m
+          step.args = { ...step.args, message: step.op.id === "squash_last" ? "squash commits" : fallbackMessage("", snap.hasCommits) };
         }
       }
       let cmds;
@@ -229,7 +271,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         ui.emit({ type: "note", tone: "error", text: `Couldn't build ${step.op.id}: ${e.message}` });
         return { ok: false, outputs, verified, unverified };
       }
-      const before = hasVerifier(step.op.id) ? await captureBefore(state.cwd, snap) : null;
+      const before = hasVerifier(step.op.id) || step.op.id === "raw" ? await captureBefore(state.cwd, snap) : null;
       const stepOutput = [];
       let skipped = false;
       for (const c of cmds) {
@@ -263,7 +305,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         stepOutput.push(text);
         // Failed command, but is the goal state already true? (e.g. deleting a branch
         // that the PR merge already deleted). Decided by the real state, never assumed.
-        if (!res.ok && before && cmds.length === 1 && !signal.aborted) {
+        if (!res.ok && before && canBeAlreadyTrue(step.op.id) && cmds.length === 1 && !signal.aborted) {
           const v = await verifyStep(step, before, state.cwd, { output: text, builtName: c[3], pushed: c.includes?.("--push") });
           if (v.ok === true) {
             ui.emit({ type: "verify", ok: true, text: `already the case — ${v.text}` });
@@ -283,6 +325,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
             outputs,
             verified: [...verified, ...(fix?.verified || [])],
             unverified: [...unverified, ...(fix?.unverified || [])],
+            unchecked: [...unchecked, ...(fix?.unchecked || [])],
             failedAt: fix?.failedAt || label,
             notRun: fixed ? [] : steps.slice(i + 1).map((s) => s.op.id),
           };
@@ -290,21 +333,28 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       }
       // Exit code 0 is not proof. Check the real state (local refs, the remote, GitHub).
       if (before && !skipped) {
-        ui.status(`Verifying ${step.op.id} against the real repo…`);
+        ui.status(`Verifying ${step.op.id === "raw" ? "that command" : step.op.id} against the real repo…`);
         const last = cmds.at(-1) || [];
-        const v = await verifyStep(step, before, state.cwd, {
-          output: stepOutput.join("\n"),
-          builtName: step.op.id === "gh_repo_create" ? last[3] : undefined,
-          pushed: Array.isArray(last) && last.includes("--push"),
-        });
-        ui.emit({ type: "verify", ok: v.ok, text: v.text });
-        outputs.push({ command: `verify ${step.op.id}`, ok: v.ok === true, output: v.text });
-        if (v.ok === false) return { ok: false, outputs, verified, unverified, failedAt: `${step.op.id} (verification: ${v.text})`, notRun: steps.slice(i + 1).map((s) => s.op.id) };
-        (v.ok ? verified : unverified).push(v.text);
+        const v =
+          step.op.id === "raw"
+            ? await verifyRaw(last, before, state.cwd)
+            : await verifyStep(step, before, state.cwd, {
+                output: stepOutput.join("\n"),
+                builtName: step.op.id === "gh_repo_create" ? last[3] : undefined,
+                pushed: Array.isArray(last) && last.includes("--push"),
+              });
+        if (v) {
+          ui.emit({ type: "verify", ok: v.ok, text: v.text });
+          outputs.push({ command: `verify ${step.op.id}`, ok: v.ok === true, output: v.text });
+          if (v.ok === false) return { ok: false, outputs, verified, unverified, unchecked, failedAt: `${step.op.id} (verification: ${v.text})`, notRun: steps.slice(i + 1).map((s) => s.op.id) };
+          (v.ok ? verified : unverified).push(v.text);
+        } else if (step.risk !== "read") unchecked.push(stepOutput.length ? fmt(last) : step.op.id);
+      } else if (!before && !skipped && step.risk !== "read" && !["cd", "sync_check"].includes(step.op.id)) {
+        unchecked.push(step.op.id);
       }
       afterStep(step, snap);
     }
-    return { ok: true, outputs, verified, unverified };
+    return { ok: true, outputs, verified, unverified, unchecked };
   }
 
   function afterStep(step, snap) {
@@ -345,7 +395,8 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       // A known fix repairs the cause; the step that failed (and everything after it)
       // still has to run, e.g. "no commits yet" -> add + commit, THEN the push again.
       const tail = [failed, ...rest].filter((s) => s && !steps.some((f) => f.op.id === s.op.id));
-      steps = [...steps, ...tail];
+      const after = (known.after || []).map((s) => resolveStep(s)).filter((s) => !s.error);
+      steps = [...steps, ...tail, ...after];
     }
     const r = await execute(steps, { request, depth: depth + 1, signal, isFix: true });
     return r;
@@ -364,8 +415,11 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
   }
 
   function remember(request, outputs, reply) {
-    const ran = outputs.map((o) => `${o.command} ${o.ok ? "(ok)" : `(FAILED: ${firstLine(o.output).slice(0, 80)})`}`).join("; ");
-    state.turns.push(`user: ${request} -> ${ran ? `ran: ${ran}` : `answered: ${reply.slice(0, 120)}`}`);
+    const ran = outputs.map((o) => `${o.command.split("\n")[0].slice(0, 90)} ${o.ok ? "(ok)" : `(FAILED: ${firstLine(o.output).slice(0, 80)})`}`).join("; ");
+    // keep PR/issue links so "merge it" / "close that issue" can find the number
+    const links = [...new Set(outputs.flatMap((o) => stripAnsi(o.output || "").match(/https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/(?:pull|issues|releases\/tag)\/[^\s)]+/g) || []))];
+    const linkText = links.length ? ` [created/used: ${links.join(" ")}]` : "";
+    state.turns.push(`user: ${request} -> ${ran ? `ran: ${ran}` : `answered: ${reply.slice(0, 120)}`}${linkText}`);
     if (state.turns.length > 6) state.turns.shift();
   }
 
@@ -393,6 +447,16 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
       if (!route && plan.steps.some((s) => s.op.id === "cd") && !CD_INTENT.test(request)) {
         plan.steps = plan.steps.filter((s) => s.op.id !== "cd");
       }
+      if (!route) {
+        const g = applyIntentGuards(request, plan.steps, snap, state.turns);
+        plan.steps = g.steps;
+        if (g.ask) {
+          plan.ask = g.ask;
+          plan.reply = "";
+        }
+        if (g.notes.length) ui.emit({ type: "note", tone: "info", text: `Adjusted to match your words: ${g.notes.join("; ")}.` });
+      }
+      plan.reply = guardReply(plan.reply, plan.steps);
       if (plan.reply || plan.ask) ui.emit({ type: "agent", text: plan.ask || plan.reply, ask: !!plan.ask, meta: plan.meta });
       if (plan.dropped?.length) ui.emit({ type: "note", tone: "warn", text: `Ignored invalid step(s): ${plan.dropped.join("; ")}` });
       if (plan.ask || !plan.steps.length) {
@@ -408,6 +472,9 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         ui.emit({ type: "summary", ok: false, text: `Request NOT completed — stopped at \`${result.failedAt || "a failed step"}\`.${skipped}` });
       } else if (result.ok && result.unverified?.length) {
         ui.emit({ type: "summary", ok: null, text: `Commands ran, but I could NOT confirm: ${result.unverified.join("; ")}. Don't treat this as done.` });
+      } else if (result.ok && result.unchecked?.length) {
+        const v = result.verified?.length ? `${result.verified.length} change(s) verified; ` : "";
+        ui.emit({ type: "summary", ok: null, text: `${v}ran without errors, but I have no independent check for: ${result.unchecked.join(", ")}. Look at the output above.` });
       } else if (result.ok && result.verified?.length) {
         ui.emit({ type: "summary", ok: true, text: `Done — verified ${result.verified.length} change(s) against the real repo.` });
       }

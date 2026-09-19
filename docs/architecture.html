@@ -32,6 +32,7 @@
   <div class="card"><h3>Planner</h3><p>One model call → <code>{reply, steps, ask, explain}</code>. Every step validated against the catalog; one repair round. <code>agent.js askModel()</code></p></div>
   <div class="card"><h3>Catalog</h3><p>Ops with typed params, risk tier and <code>build()</code> → argv. The "boilerplate". <code>src/catalog/</code></p></div>
   <div class="card"><h3>Executor</h3><p>Confirm policy (mode × risk), re-snapshot between steps, auto commit messages. <code>agent.js execute()</code></p></div>
+  <div class="card"><h3>Intent guard</h3><p>Your words correct risky parameters the model got wrong (merge direction, ours/theirs, --hard, public). Vague "delete it" becomes a question. <code>intent.js</code></p></div>
   <div class="card"><h3>Verifier</h3><p>After each change, checks the real state (ls-remote, <code>gh --json</code>). "Done" only when verified; never on exit code alone. <code>verify.js</code></p></div>
   <div class="card"><h3>Debugger</h3><p>Known-error table first (instant), model diagnosis second; fixes always confirmed; max 2 rounds. <code>knownErrors.js</code></p></div>
   <div class="card"><h3>TUI</h3><p>Ink: static transcript, animated cat + status, prompt with slash menu and history, confirm box. <code>src/ui/App.js</code></p></div>
@@ -46,7 +47,7 @@ flowchart TD
   R -- no --> P[model: pick ops from catalog + args]
   P --> V{valid ops and args?}
   V -- no --> P2[one repair round with the exact error] --> X
-  V -- yes --> X[build argv per step]
+  V -- yes --> G[intent guard: user's words fix parameters] --> X[build argv per step]
   X --> C{needs confirm? mode × risk}
   C -- declined --> E[nothing runs]
   C -- ok --> RUN[run step, re-snapshot before next]
@@ -62,9 +63,9 @@ flowchart TD
 <h2>How a change ships</h2>
 <pre class="mermaid">
 flowchart LR
-  E[edit src/] --> T[npm test — 56 tests]
+  E[edit src/] --> T[npm test — 73 tests]
   T --> EV[node scripts/eval.js ollama — accuracy must not drop]
-  EV --> E2[node scripts/e2e.js ollama — 18 real scenarios]
+  EV --> E2[node scripts/journey.js — 73 real-user prompts, 0 lies]
   E2 --> D[python check_docs.py --write]
   D --> C[commit]
 </pre>

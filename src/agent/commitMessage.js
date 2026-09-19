@@ -2,29 +2,57 @@ import { q } from "../exec/run.js";
 import { chat } from "../llm/index.js";
 import { COMMIT_SYSTEM } from "./prompt.js";
 
-const MAX_DIFF = 7000;
+const BUDGET = 7000; // total diff characters sent to the model
+const MAX_FILES = 40;
 
-/** Collect the diff this commit will contain. Returns "" if there is nothing to commit. */
+/**
+ * Collect what this commit will contain: the full file list (always complete)
+ * plus a diff where every file gets a share of the budget. A plain truncated
+ * diff only ever showed the first few files, so a commit that added a feature
+ * AND touched docs got labelled "docs:". Returns "" if there's nothing to commit.
+ */
 export async function diffFor(op, args, cwd) {
   if (op.id === "squash_last") {
     const n = args.n || 2;
-    const [stat, diff, subjects] = await Promise.all([
-      q(["git", "diff", "--stat", `HEAD~${n}`, "HEAD"], cwd),
-      q(["git", "diff", "-U2", `HEAD~${n}`, "HEAD"], cwd),
-      q(["git", "log", "--format=- %s", `-n${n}`], cwd),
-    ]);
-    return stat ? `Commits being squashed:\n${subjects}\n\n${stat}\n\n${diff}` : "";
+    const [stat, subjects] = await Promise.all([q(["git", "diff", "--stat=120", `HEAD~${n}`, "HEAD"], cwd), q(["git", "log", "--format=- %s", `-n${n}`], cwd)]);
+    if (!stat) return "";
+    return `Commits being squashed:\n${subjects}\n\n${stat}\n\n${await perFileDiff([`HEAD~${n}`, "HEAD"], cwd)}`;
   }
-  const range = args.all ? ["HEAD"] : ["--cached"];
-  const [stat, diff] = await Promise.all([q(["git", "diff", "--stat", ...range], cwd), q(["git", "diff", "-U2", ...range], cwd)]);
-  return stat ? `${stat}\n\n${diff}` : "";
+  const hasHead = !!(await q(["git", "rev-parse", "--verify", "--quiet", "HEAD"], cwd));
+  const range = args.all && hasHead ? ["HEAD"] : ["--cached"];
+  const stat = await q(["git", "diff", "--stat=120", ...range], cwd);
+  if (!stat) return "";
+  return `${stat}\n\n${await perFileDiff(range, cwd)}`;
+}
+
+async function perFileDiff(range, cwd) {
+  const files = (await q(["git", "diff", "--name-only", ...range], cwd)).split(/\r?\n/).filter(Boolean);
+  const shown = files.slice(0, MAX_FILES);
+  const each = Math.max(250, Math.floor(BUDGET / Math.max(1, shown.length)));
+  const parts = await Promise.all(
+    shown.map(async (f) => {
+      const d = await q(["git", "diff", "-U1", ...range, "--", f], cwd);
+      return d.length > each ? `${d.slice(0, each)}\n…(${f}: ${d.length - each} more chars)` : d;
+    }),
+  );
+  const more = files.length > shown.length ? `\n…and ${files.length - shown.length} more files (see stat above)` : "";
+  return parts.join("\n") + more;
+}
+
+/** Deterministic fallback — a commit must never run without a message. */
+export function fallbackMessage(diff, hasCommits) {
+  if (!hasCommits) return "Initial commit";
+  const files = String(diff)
+    .split("\n")
+    .filter((l) => /\|\s+\d+/.test(l))
+    .map((l) => l.split("|")[0].trim());
+  return files.length === 1 ? `chore: update ${files[0]}` : `chore: update ${files.length || "several"} files`;
 }
 
 /** Ask the model for a conventional commit message. Falls back to a stat-based message. */
 export async function writeCommitMessage(settings, diff, cwd, signal, llm = chat) {
   const recent = await q(["git", "log", "-5", "--format=%s"], cwd);
-  const body = diff.length > MAX_DIFF ? diff.slice(0, MAX_DIFF) + `\n…(diff truncated, ${diff.length - MAX_DIFF} more chars)` : diff;
-  const user = `${recent ? `Recent commit subjects in this repo (style reference only — never reuse them; describe THIS diff):\n${recent}\n\n` : ""}Diff:\n${body}`;
+  const user = `${recent ? `Recent commit subjects in this repo (style reference only — never reuse them; describe THIS diff):\n${recent}\n\n` : ""}Changes (the file list is complete; per-file diffs may be cut):\n${diff}`;
   try {
     const r = await llm(settings, [
       { role: "system", content: COMMIT_SYSTEM },
@@ -39,9 +67,5 @@ export async function writeCommitMessage(settings, diff, cwd, signal, llm = chat
   } catch {
     /* fall through to the heuristic */
   }
-  const files = diff
-    .split("\n")
-    .filter((l) => /\|\s+\d+/.test(l))
-    .map((l) => l.split("|")[0].trim());
-  return { message: files.length === 1 ? `chore: update ${files[0]}` : `chore: update ${files.length} files` };
+  return { message: fallbackMessage(diff, !!recent) };
 }

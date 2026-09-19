@@ -34,10 +34,27 @@ export default [
   },
   {
     id: "undo_commit",
-    desc: "undo the last n commits but KEEP the changes (soft reset)",
-    params: { n: "int" },
+    desc: "undo the last n commits. default keeps the changes STAGED; unstage=true keeps them as unstaged edits; discard=true THROWS the changes away",
+    params: { n: "int", unstage: "bool", discard: "bool" },
+    risk: (p) => (p.discard ? "danger" : "write"),
+    warn: (p) => (p.discard ? "The undone commit's changes (and any uncommitted edits) are discarded. Recoverable only via reflog." : ""),
+    build: (p, ctx) => {
+      const n = p.n || 1;
+      const mode = p.discard ? "--hard" : p.unstage ? "--mixed" : "--soft";
+      // HEAD~n doesn't exist when undoing past the first commit: drop the branch
+      // ref instead (files stay staged, like --soft), then unstage if asked.
+      if (ctx.snap.commitCount && n >= ctx.snap.commitCount) {
+        return p.unstage || p.discard ? [["git", "update-ref", "-d", "HEAD"], ["git", "rm", "-r", "--cached", "-q", "."]] : [["git", "update-ref", "-d", "HEAD"]];
+      }
+      return [["git", "reset", mode, `HEAD~${n}`]];
+    },
+  },
+  {
+    id: "recover_commit",
+    desc: "bring back a lost/deleted commit (e.g. after a hard reset or undo) — finds it in the reflog by words from its message, or by hash",
+    params: { message: "str", sha: "str" },
     risk: "write",
-    build: (p) => [["git", "reset", "--soft", `HEAD~${p.n || 1}`]],
+    build: (p) => [{ internal: "recover", message: p.message, sha: p.sha }],
   },
   {
     id: "reset",
@@ -47,14 +64,20 @@ export default [
     warn: (p) => (p.mode === "hard" ? "--hard permanently discards uncommitted changes and moves the branch." : ""),
     build: (p) => [["git", "reset", `--${p.mode || "mixed"}`, p.ref || "HEAD"]],
   },
-  { id: "revert", desc: "create a new commit that undoes a commit (safe for pushed history)", params: { ref: "str!" }, risk: "write", build: (p) => [["git", "revert", "--no-edit", p.ref]] },
+  {
+    id: "revert",
+    desc: "create a new commit that undoes a commit (safe for pushed history). For a MERGE commit set mainline=1",
+    params: { ref: "str!", mainline: "int" },
+    risk: "write",
+    build: (p) => [["git", "revert", "--no-edit", ...(p.mainline ? ["-m", String(p.mainline)] : []), p.ref]],
+  },
   {
     id: "discard",
-    desc: "throw away uncommitted edits to tracked files (no paths = all). To also delete new untracked files add clean",
+    desc: "throw away uncommitted edits (staged AND unstaged) so files match the last commit (no paths = all). Untracked files are kept — use clean for those",
     params: { paths: "list" },
     risk: "danger",
-    warn: () => "Uncommitted edits in these files are lost for good.",
-    build: (p) => [["git", "restore", "--", ...(p.paths || ["."])]],
+    warn: () => "Uncommitted edits in these files are lost for good (newly added files are removed).",
+    build: (p) => [["git", "restore", "--staged", "--worktree", "--source=HEAD", "--", ...(p.paths || ["."])]],
   },
   {
     id: "restore_file",
@@ -88,8 +111,8 @@ export default [
     risk: "write",
     build: (p) => [["git", "stash", "push", ...(p.untracked ? ["-u"] : []), ...(p.message ? ["-m", p.message] : [])]],
   },
-  { id: "stash_pop", desc: "re-apply a stash and remove it", params: { index: "int" }, risk: "write", build: (p) => [["git", "stash", "pop", ...(p.index !== undefined ? [`stash@{${p.index}}`] : [])]] },
-  { id: "stash_apply", desc: "re-apply a stash but keep it", params: { index: "int" }, risk: "write", build: (p) => [["git", "stash", "apply", ...(p.index !== undefined ? [`stash@{${p.index}}`] : [])]] },
+  { id: "stash_pop", desc: "bring stashed work back (restore / unstash) and remove it from the stash list — the normal choice", params: { index: "int" }, risk: "write", build: (p) => [["git", "stash", "pop", ...(p.index !== undefined ? [`stash@{${p.index}}`] : [])]] },
+  { id: "stash_apply", desc: "re-apply a stash but KEEP it in the list (only when the user wants to keep the stash)", params: { index: "int" }, risk: "write", build: (p) => [["git", "stash", "apply", ...(p.index !== undefined ? [`stash@{${p.index}}`] : [])]] },
   {
     id: "stash_drop",
     desc: "delete a stash (all=true clears every stash)",

@@ -70,8 +70,9 @@ async function mount(plans = [], mode = "auto") {
 test("header, tips, input and status line render", async () => {
   const { r, frame } = await mount();
   const f = frame();
-  assert.match(f, /GitCat/);
-  assert.match(f, /\( o\.o \)/); // the cat
+  assert.match(f, /git in plain English/);
+  assert.match(f, /\/\\       \/\\/); // the cat's ears in the always-on dock
+  assert.match(f, /Hi! I'm GitCat|Ready when you are/);
   assert.match(f, /⎇ main/);
   assert.match(f, /auto — asks only before dangerous commands/);
   r.unmount();
@@ -120,7 +121,7 @@ test("dangerous plan shows a confirm box; 'n' skips it", async () => {
   r.stdin.write(ENTER);
   await until(() => /Run these commands/.test(frame()));
   assert.match(frame(), /Run these commands\?\s+\(destructive\)/);
-  assert.match(frame(), /\$ git restore -- \./);
+  assert.match(frame(), /\$ git restore --staged --worktree --source=HEAD -- \./);
   r.stdin.write("n");
   await until(() => /Skipped — nothing was run/.test(all()));
   assert.match(all(), /Skipped — nothing was run/);
@@ -134,8 +135,8 @@ test("confirm 'y' runs the dangerous command", async () => {
   r.stdin.write(ENTER);
   await until(() => /Run these commands/.test(frame()));
   r.stdin.write("y");
-  await until(() => /✔ git restore -- \./.test(all()));
-  assert.match(all(), /✔ git restore -- \./);
+  await until(() => /✔ git restore --staged --worktree --source=HEAD -- \./.test(all()));
+  assert.match(all(), /✔ git restore --staged --worktree --source=HEAD -- \./);
   assert.equal(fs.readFileSync(path.join(REPO, "a.txt"), "utf8"), "x\n");
   r.unmount();
 });

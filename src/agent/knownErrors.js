@@ -53,7 +53,27 @@ const RULES = [
   },
   {
     test: /Your local changes to the following files would be overwritten|Please commit your changes or stash them/i,
-    fix: () => ({ cause: "You have uncommitted changes that this would overwrite.", steps: null }),
+    fix: (s, argv) =>
+      /^(switch|checkout|pull|merge|rebase|cherry-pick|revert|stash)$/.test(argv[1] || "")
+        ? {
+            // park the edits, do what was asked, bring the edits back
+            cause: "Your uncommitted changes would be overwritten. Stashing them, retrying, then restoring them.",
+            steps: [{ op: "stash", args: { untracked: true, message: "gitcat: auto-stash" } }],
+            after: [{ op: "stash_pop", args: {} }],
+          }
+        : { cause: "You have uncommitted changes that this would overwrite.", steps: null },
+  },
+  {
+    test: /Cannot delete branch '([^']+)' (checked out|used by worktree)/i,
+    fix: (s, argv, output) => {
+      const b = output.match(/Cannot delete branch '([^']+)'/i)[1];
+      // checked out in a DIFFERENT worktree: switching here won't help
+      const wt = (output.match(/used by worktree at '([^']+)'/i) || [])[1];
+      if (wt && s.root && wt.replace(/\\/g, "/").toLowerCase() !== s.root.replace(/\\/g, "/").toLowerCase())
+        return { cause: `"${b}" is checked out in another worktree (${wt}). Remove that worktree first ("remove the worktree ${wt}"), then delete the branch.`, steps: [] };
+      if (b === s.defaultBranch) return { cause: `"${b}" is your main branch and you're on it — refusing to delete it.`, steps: [] };
+      return { cause: `You're currently on "${b}", so git can't delete it. Switching to ${s.defaultBranch} first.`, steps: [{ op: "switch", args: { branch: s.defaultBranch } }] };
+    },
   },
   {
     test: /nothing added to commit but untracked files present|no changes added to commit/i,
@@ -69,6 +89,10 @@ const RULES = [
       cause: `Merge conflict${s.conflicts?.length ? ` in ${s.conflicts.join(", ")}` : ""}. Fix the conflicted files (look for <<<<<<< markers), then say "continue" — or say "abort" to back out, or "keep mine"/"keep theirs".`,
       steps: [],
     }),
+  },
+  {
+    test: /There is no merge to abort|MERGE_HEAD missing|No rebase in progress|no cherry-pick or revert in progress/i,
+    fix: () => ({ cause: `Nothing is in progress to cancel — the last merge/rebase already finished. To undo a finished merge, say "undo the last merge".`, steps: [] }),
   },
   {
     test: /You have not concluded your merge|MERGE_HEAD exists|rebase-merge directory|in the middle of (a|an) (rebase|am)/i,

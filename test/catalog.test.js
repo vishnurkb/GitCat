@@ -121,3 +121,11 @@ test("catalog prompt text stays compact", () => {
   assert.match(t, /^status\(\) — /m);
   assert.match(t, /branch_create\(name:str, from\?:str, stay\?:bool\)/);
 });
+
+test("audit #5: gh_pr_create pushes first when the branch has unpushed commits", () => {
+  const s = resolveStep({ op: "gh_pr_create", args: { title: "x" } });
+  const ahead = buildCommands(s, { cwd: "/r", snap: { ...snap, branch: "feat", upstream: "origin/feat", upstreamRemote: "origin", ahead: 2 } });
+  assert.deepEqual(ahead[0], ["git", "push", "-u", "origin", "feat"]);
+  const synced = buildCommands(s, { cwd: "/r", snap: { ...snap, branch: "feat", upstream: "origin/feat", ahead: 0 } });
+  assert.equal(synced[0][0], "gh");
+});

@@ -71,7 +71,8 @@ export default [
     risk: "write",
     build: (p, ctx) => {
       const steps = [];
-      if (!ctx.snap.upstream && ctx.snap.branch) steps.push(["git", "push", "-u", ctx.snap.defaultRemote || "origin", ctx.snap.branch]);
+      // a PR only contains what's on GitHub — push first if the branch is new OR has unpushed commits
+      if (ctx.snap.branch && (!ctx.snap.upstream || ctx.snap.ahead > 0)) steps.push(["git", "push", "-u", ctx.snap.upstreamRemote || ctx.snap.defaultRemote || "origin", ctx.snap.branch]);
       const a = ["gh", "pr", "create"];
       if (p.title) a.push("--title", p.title, "--body", p.body || "");
       else a.push("--fill");
