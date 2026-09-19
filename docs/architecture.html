@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitCat Architecture</title>
+<!-- Generated from docs/architecture.md. Edit the markdown, then regenerate this page. -->
+<style>
+  :root { --bg:#fbfaf7; --fg:#1f1d1a; --muted:#6b665e; --card:#fff; --line:#e6e1d8; --accent:#c2417d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16151a; --fg:#ece9f1; --muted:#9a95a6; --card:#1f1d25; --line:#2e2b36; --accent:#ff79c6; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { margin:0 0 4px; } h1 span { color:var(--accent); }
+  h2 { margin-top:40px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  .lede { color:var(--muted); max-width:70ch; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h3 { margin:0 0 6px; font-size:15px; } .card p { margin:0; color:var(--muted); font-size:14px; }
+  code { font-family:ui-monospace, Consolas, monospace; font-size:13px; }
+  pre.mermaid { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; } td, th { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+</style>
+</head>
+<body>
+<main>
+<h1><span>=^.^=</span> GitCat architecture</h1>
+<p class="lede">GitCat turns a sentence into git/gh commands without letting the model write commands. The model only chooses operation ids from a fixed catalog of ~95 ops and fills in their arguments; code builds the argv, classifies risk, runs it, and handles failures. That keeps a 4B local model at 96% plan accuracy with ~0.9 s per plan.</p>
+
+<h2>Components</h2>
+<div class="grid">
+  <div class="card"><h3>Router</h3><p>Exact phrases (<code>push</code>, <code>status</code>), raw <code>git …</code>, <code>cd …</code> → steps with zero model calls. <code>src/agent/router.js</code></p></div>
+  <div class="card"><h3>Planner</h3><p>One model call → <code>{reply, steps, ask, explain}</code>. Every step validated against the catalog; one repair round. <code>agent.js askModel()</code></p></div>
+  <div class="card"><h3>Catalog</h3><p>Ops with typed params, risk tier and <code>build()</code> → argv. The "boilerplate". <code>src/catalog/</code></p></div>
+  <div class="card"><h3>Executor</h3><p>Confirm policy (mode × risk), re-snapshot between steps, auto commit messages. <code>agent.js execute()</code></p></div>
+  <div class="card"><h3>Debugger</h3><p>Known-error table first (instant), model diagnosis second; fixes always confirmed; max 2 rounds. <code>knownErrors.js</code></p></div>
+  <div class="card"><h3>TUI</h3><p>Ink: static transcript, animated cat + status, prompt with slash menu and history, confirm box. <code>src/ui/App.js</code></p></div>
+</div>
+
+<h2>One request, end to end</h2>
+<pre class="mermaid">
+flowchart TD
+  U[user types a request] --> S[snapshot repo: status, branches, remotes, stashes, gh accounts]
+  S --> R{fast path match?}
+  R -- "status / push / git log -3" --> X
+  R -- no --> P[model: pick ops from catalog + args]
+  P --> V{valid ops and args?}
+  V -- no --> P2[one repair round with the exact error] --> X
+  V -- yes --> X[build argv per step]
+  X --> C{needs confirm? mode × risk}
+  C -- declined --> E[nothing runs]
+  C -- ok --> RUN[run step, re-snapshot before next]
+  RUN -- fails --> K{known error?}
+  K -- yes --> F[fix plan, e.g. pull --rebase then push]
+  K -- no --> D[model diagnosis + fix plan]
+  F --> C2[confirm fix] --> RUN
+  D --> C2
+  RUN -- ok, explain=true --> A[model summarizes output]
+</pre>
+<p>The surprising step: <strong>commands are built at run time, not plan time.</strong> <code>push</code> after <code>branch_create</code> must see the new branch to add <code>-u origin &lt;branch&gt;</code>, so the executor re-snapshots between steps. Skip that and the second step pushes the old branch.</p>
+
+<h2>How a change ships</h2>
+<pre class="mermaid">
+flowchart LR
+  E[edit src/] --> T[npm test — 43 tests]
+  T --> EV[node scripts/eval.js ollama — accuracy must not drop]
+  EV --> E2[node scripts/e2e.js ollama — 18 real scenarios]
+  E2 --> D[python check_docs.py --write]
+  D --> C[commit]
+</pre>
+<p><code>scripts/eval.js</code> is what catches prompt regressions: one catalog-description change moved local accuracy from 90% to 96%; a JSON-schema change dropped it to 70%.</p>
+
+<h2>Boundaries</h2>
+<table>
+<tr><th>External</th><th>Used for</th><th>When it's down</th></tr>
+<tr><td>Ollama</td><td>primary model</td><td>falls back to Groq if a key exists</td></tr>
+<tr><td>Groq</td><td>fallback model (slim prompt)</td><td>falls back to Ollama; 429 at 8k tokens/min</td></tr>
+<tr><td>git</td><td>everything</td><td>nothing works; launcher checks it</td></tr>
+<tr><td>gh</td><td>GitHub ops, accounts</td><td>GitHub ops fail with gh's message; git ops fine</td></tr>
+<tr><td>no model at all</td><td>—</td><td>fast path, slash shortcuts and raw <code>git …</code> still work</td></tr>
+</table>
+</main>
+<script type="module">
+  try {
+    const { default: mermaid } = await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs");
+    mermaid.initialize({ startOnLoad: false, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+    await mermaid.run({ querySelector: "pre.mermaid" });
+  } catch (e) { /* offline: the <pre> still shows the diagram source */ }
+</script>
+</body>
+</html>

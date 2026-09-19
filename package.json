@@ -1,0 +1,28 @@
+{
+  "name": "gitcat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GitCat â€” a tiny, fast AI git agent for your terminal. Plain English in, the right git/gh commands out.",
+  "type": "module",
+  "bin": {
+    "gitcat": "bin/gitcat.js"
+  },
+  "main": "bin/gitcat.js",
+  "scripts": {
+    "start": "node bin/gitcat.js",
+    "test": "node --test \"test/*.test.js\"",
+    "eval": "node scripts/eval.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "execa": "^10.0.1",
+    "htm": "^3.1.1",
+    "ink": "^7.1.1",
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "ink-testing-library": "^4.0.0"
+  }
+}
