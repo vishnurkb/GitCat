@@ -142,6 +142,10 @@ export function applyIntentGuards(request, steps, snap = {}, turns = []) {
     if (id === "push" && a.force && !has(text, W.force)) return note(withoutArg(s, "force"), "you didn't ask to force push → normal push");
     if (id === "branch_delete" && a.force && !has(text, W.forceDelete)) return note(withoutArg(s, "force"), "you didn't ask to force delete → safe delete (git refuses if unmerged)");
     if ((id === "set_identity" || id === "config_set") && a.global && !has(text, W.global)) return note(withoutArg(s, "global"), "you didn't say global → setting it for this repo only");
+    // a commit message the user never gave ("chore: commit all changes") is worse than one written from the diff
+    if (id === "commit" && a.message && !a.amend && !/["'“‘`]|\b(message|msg|saying|titled|called|named|with the text|describe it as)\b/i.test(text)) {
+      return note(withoutArg(s, "message"), "you didn't give a commit message → writing one from your diff");
+    }
     // "delete the tag on the remote" is not "push the tag"
     if (id === "push_tags" && /\b(delete|remove|drop)\b/i.test(text) && /\btag/i.test(text) && a.name) {
       return note(resolveStep({ op: "delete_remote_tag", args: { name: a.name, ...(a.remote ? { remote: a.remote } : {}) } }), `you asked to delete tag ${a.name} on the remote → deleting it there (not pushing it)`);

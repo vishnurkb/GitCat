@@ -51,7 +51,7 @@ ollama pull qwen3:4b-instruct-2507-q4_K_M
 ## Verify
 
 ```bash
-npm test                       # 73 tests: catalog, parsing, intent guard, agent e2e on real git (incl. fake GitHub + lying gh), TUI
+npm test                       # 74 tests: catalog, parsing, intent guard, agent e2e on real git (incl. fake GitHub + lying gh), TUI
 node scripts/e2e.js ollama     # 18 real-model scenarios on throwaway repos (~35 s)
 node scripts/eval.js ollama    # planner accuracy, 50 requests (~1 min)
 ```
@@ -64,7 +64,7 @@ node scripts/journey.js           # + 10 on real GitHub: repo, PR, merge, issue,
 node scripts/github-e2e.js        # 20 GitHub steps incl. account switching and negative cases (~2.5 min)
 ```
 
-Expected (last run 2026-09-20): `ℹ pass 73 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 49/50` (±1 run to run);
+Expected (last run 2026-09-20): `ℹ pass 74 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 49/50` (±1 run to run);
 journey `73/73 prompts did the right thing`, `LIES: 0`; GitHub run `20/20`, `LIES: 0`, `Under-claims: 0`.
 The journey creates 1 private `gitcat-journey-*` repo, github-e2e creates 2 `gitcat-e2e-*` repos.
 Deleting test repos needs a token scope gh doesn't have by default: `gh auth refresh -h github.com -s delete_repo`, then `gh repo delete vishnurkb/<name> --yes`.

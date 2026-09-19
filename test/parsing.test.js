@@ -164,3 +164,12 @@ test("extractJson repairs the model's real-world bracket slip", () => {
   assert.deepEqual(extractJson(bad).steps.map((s) => s.op), ["tag_create", "push_tags", "gh_release_create"]);
   assert.deepEqual(extractJson('{"a":[1,2,],"b":{"c":"}"'), { a: [1, 2], b: { c: "}" } });
 });
+
+test("intent guard: invented commit messages are dropped, given ones kept", async () => {
+  const { applyIntentGuards } = await import("../src/agent/intent.js");
+  const { resolveStep } = await import("../src/catalog/index.js");
+  const msg = (req, m) => applyIntentGuards(req, [resolveStep({ op: "commit", args: { message: m } })]).steps[0].args.message;
+  assert.equal(msg("commit all my changes and push them", "chore: commit all changes"), undefined);
+  assert.equal(msg("commit with the message 'Fix JWT bug'", "Fix JWT bug"), "Fix JWT bug");
+  assert.equal(msg('commit it as "Add config"', "Add config"), "Add config");
+});

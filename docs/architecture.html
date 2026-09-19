@@ -63,7 +63,7 @@ flowchart TD
 <h2>How a change ships</h2>
 <pre class="mermaid">
 flowchart LR
-  E[edit src/] --> T[npm test — 73 tests]
+  E[edit src/] --> T[npm test — 74 tests]
   T --> EV[node scripts/eval.js ollama — accuracy must not drop]
   EV --> E2[node scripts/journey.js — 73 real-user prompts, 0 lies]
   E2 --> D[python check_docs.py --write]
