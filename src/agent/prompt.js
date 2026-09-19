@@ -20,7 +20,9 @@ RULES
 7. Prefer safe variants: "undo last commit" = undo_commit (keeps changes) unless the user says discard/hard. Deleting a branch = branch_delete without force unless the user insists.
 8. git_raw / gh_raw only when no catalog op fits.
 9. If the user refers to earlier turns ("do it again", "push that too"), use RECENT TURNS.
-10. Never output anything except the JSON object.`;
+10. Never output anything except the JSON object.
+11. "reply" states what you are ABOUT to do ("Pushing main to origin."). NEVER claim something is done or was done — you cannot know until the commands run.
+12. If the user asks whether something happened or complains it didn't ("did you push?", "the repo is empty"), do NOT answer from memory: check REPO STATE (ahead/behind, "never pushed") and plan the steps that actually finish the job (e.g. push).`;
 
 const catalogBlock = (ops) => `CATALOG  id(args) — meaning      (arg types: str, int, bool, list = JSON array of strings, a|b = one of)
 ${catalogText(ops)}`;
@@ -44,6 +46,8 @@ user: switch to my other github account
 {"reply":"Switching the active GitHub account.","steps":[{"op":"gh_switch_account","args":{}}],"ask":"","explain":false}
 user: bring in the changes from dev and message "merge dev"
 {"reply":"Merging dev into the current branch.","steps":[{"op":"merge","args":{"branch":"dev","message":"merge dev"}}],"ask":"","explain":false}
+user: did you push it? / is it on github?
+{"reply":"Checking whether your branch is on the remote.","steps":[{"op":"sync_check","args":{}}],"ask":"","explain":false}
 user: start a git bisect
 {"reply":"Starting a bisect session.","steps":[{"op":"git_raw","args":{"command":"bisect start"}}],"ask":"","explain":false}
 user: connect this to https://github.com/me/app.git and push

@@ -53,6 +53,8 @@ The tables below are hand-written: what each file is for and what would surprise
 |   |   `-- theme.js
 |   `-- headless.js
 |-- test/
+|   |-- fixtures/
+|   |   `-- fake-gh.mjs
 |   |-- agent.e2e.test.js
 |   |-- catalog.test.js
 |   |-- parsing.test.js
@@ -129,6 +131,7 @@ The tables below are hand-written: what each file is for and what would surprise
 | `test/parsing.test.js` | Router, known errors, porcelain/hosts.yml parsing, slash matching. |
 | `test/agent.e2e.test.js` | Real git in temp repos with a scripted model: rejected push auto-fix, conflicts, modes, untrack. |
 | `test/ui.test.js` | Real App through ink-testing-library: slash menu, confirm y/n, shift+tab, history. |
+| `test/fixtures/fake-gh.mjs` | Stand-in `gh` for tests (set `GITCAT_GH_SHIM`): `repo create --source --push` and `repo view` backed by a local bare repo, so GitHub flows run end to end without a real account. |
 | `scripts/eval.js` | 50-request accuracy/latency eval against real models. |
 | `scripts/e2e.js` | 18 real-model scenarios on throwaway repos with git-state assertions. |
 | `check_docs.py` | Regenerates the tree above and flags undocumented / phantom paths. |

@@ -18,7 +18,7 @@ export default [
     risk: "write",
     build: (p) => [["git", "switch", p.branch]],
   },
-  { id: "checkout_commit", desc: "look at an old commit (detached HEAD)", params: { ref: "str!" }, risk: "write", build: (p) => [["git", "switch", "--detach", p.ref]] },
+  { id: "checkout_commit", desc: "ONLY to inspect an old commit by hash (detached HEAD, no branch). Never use it to go to a branch — that is switch", params: { ref: "str!" }, risk: "write", build: (p) => [["git", "switch", "--detach", p.ref]] },
   {
     id: "branch_rename",
     desc: "rename a branch (from omitted = current branch)",

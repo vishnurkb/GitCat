@@ -2,6 +2,11 @@
 
 Append-only, newest first.
 
+## 2026-09-19 — Post-release fixes from the first real session ("created repo, never pushed")
+**Context:** User asked "create a private repo GitCat and push this folder". Result: empty GitHub repo, then the agent claimed "Yes, I pushed". Four bugs: (1) `gh_repo_create` dropped `--push` when the repo had no commits; (2) a known-error fix (add + commit) never retried the failed push; (3) "nothing to commit" aborted the rest of a plan, so `push` never ran; (4) the model's `reply` asserted success that never happened.
+**Decision:** `gh_repo_create` makes the initial commit (and `git init`) itself; known fixes append the failed step + remaining steps; a clean-tree commit is skipped, not fatal; replies are intent-only, unfinished requests print "Request NOT completed"; "did you push?" is answered by `sync_check` (fetch + compare), never by the model; `cd` the user didn't ask for is dropped.
+**Why tests missed it:** no test created a GitHub repo from an uncommitted folder, and no plan had a mid-plan failure. Added `test/fixtures/fake-gh.mjs` (via `GITCAT_GH_SHIM`) so GitHub flows now run end to end against a local bare repo, plus 7 regression tests.
+
 ## 2026-09-19 — Confirm-box keys routed by a render-time ref, not useInput isActive
 **Context:** Ink swaps `useInput` subscriptions in effects, after paint. A "y" typed right as the confirm box appeared landed in the prompt instead (reproduced at ~600 ms in a test).
 **Decision:** Prompt and confirm both subscribe permanently; each handler checks a ref set during render.

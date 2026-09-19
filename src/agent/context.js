@@ -146,7 +146,7 @@ export function contextText(s) {
   let b = `branch: ${s.branch || "(detached HEAD)"}`;
   if (!s.hasCommits) b += " (no commits yet)";
   if (s.upstream) b += ` -> ${s.upstream} ahead ${s.ahead} behind ${s.behind}`;
-  else if (s.branch) b += " (no upstream, never pushed)";
+  else if (s.branch) b += s.remotes.length ? " (NOT pushed yet: no upstream — needs push)" : " (no upstream, never pushed)";
   lines.push(b);
   if (s.inProgress) lines.push(`IN PROGRESS: ${s.inProgress}${s.conflicts.length ? ` conflicts: ${s.conflicts.join(", ")}` : ""}`);
   if (s.staged.length) lines.push(`staged: ${cap(s.staged, 12).join("; ")}`);

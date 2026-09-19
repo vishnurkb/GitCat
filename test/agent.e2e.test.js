@@ -250,3 +250,100 @@ test("raw git commands are classified and dangerous ones confirmed", async () =>
   assert.equal(h.confirms.length, 1);
   assert.ok(h.cmds()[0].ok);
 });
+
+// ---- Regressions from a real session (2026-09-19): "create a private repo and
+// push this folder" created an EMPTY GitHub repo and never pushed. ----------
+
+const FAKE_GH = path.join(ROOT, "fake-github");
+function useFakeGh() {
+  fs.mkdirSync(FAKE_GH, { recursive: true });
+  process.env.GITCAT_GH_SHIM = path.join(import.meta.dirname, "fixtures", "fake-gh.mjs");
+  process.env.FAKE_GH_DIR = FAKE_GH;
+}
+const remoteLog = (name) => git(ROOT, "--git-dir", path.join(FAKE_GH, `${name}.git`), "log", "--format=%s", "main");
+
+function freshUncommittedRepo(name) {
+  const dir = path.join(ROOT, name);
+  fs.mkdirSync(dir, { recursive: true });
+  git(dir, "init", "-q", "-b", "main");
+  git(dir, "config", "user.name", "Test");
+  git(dir, "config", "user.email", "t@example.com");
+  fs.writeFileSync(path.join(dir, "README.md"), "# app\n");
+  fs.writeFileSync(path.join(dir, "index.js"), "console.log(1)\n");
+  return dir;
+}
+
+test("regression: gh repo create on a repo with NO commits commits first and pushes", async () => {
+  useFakeGh();
+  const dir = freshUncommittedRepo("nocommits");
+  const h = harness(dir, [{ steps: [{ op: "gh_repo_create", args: { name: "GitCatA", visibility: "private", description: "demo" } }] }]);
+  await h.agent.handle("create a private repo GitCatA and push this folder to it");
+  assert.ok(h.cmds().every((c) => c.ok), JSON.stringify(h.cmds()));
+  assert.deepEqual(h.cmds().map((c) => c.command.split(" ").slice(0, 3).join(" ")), ["git add -A", "git commit -m", "gh repo create"]);
+  assert.match(h.cmds().at(-1).command, /--push/);
+  assert.equal(remoteLog("GitCatA"), "Initial commit");
+});
+
+test("regression: gh repo create from a plain folder runs git init first", async () => {
+  useFakeGh();
+  const dir = path.join(ROOT, "plainfolder");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "a.txt"), "x\n");
+  const h = harness(dir, [{ steps: [{ op: "gh_repo_create", args: { name: "GitCatB" } }] }]);
+  await h.agent.handle("put this folder on github");
+  assert.ok(h.cmds().every((c) => c.ok), JSON.stringify(h.cmds()));
+  assert.equal(remoteLog("GitCatB"), "Initial commit");
+});
+
+test("regression: push on a branch with no commits -> add+commit fix, then the push is RETRIED", async () => {
+  useFakeGh();
+  const dir = freshUncommittedRepo("refspec");
+  git(ROOT, "init", "-q", "--bare", "-b", "main", path.join(FAKE_GH, "GitCatC.git"));
+  git(dir, "remote", "add", "origin", path.join(FAKE_GH, "GitCatC.git"));
+  const h = harness(dir, [{ steps: [{ op: "push", args: {} }] }]);
+  await h.agent.handle("push this to github");
+  const cmds = h.cmds().map((c) => `${c.ok ? "ok" : "FAIL"} ${c.command.split(" ").slice(0, 3).join(" ")}`);
+  assert.deepEqual(cmds, ["FAIL git push -u", "ok git add -A", "ok git commit -m", "ok git push -u"]);
+  assert.equal(remoteLog("GitCatC"), "Initial commit");
+  assert.ok(!h.items.some((i) => /NOT completed/.test(i.text || "")));
+});
+
+test("regression: 'nothing to commit' does not stop the push that follows", async () => {
+  useFakeGh();
+  const dir = freshUncommittedRepo("clean");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "Initial commit");
+  git(ROOT, "init", "-q", "--bare", "-b", "main", path.join(FAKE_GH, "GitCatD.git"));
+  git(dir, "remote", "add", "origin", path.join(FAKE_GH, "GitCatD.git"));
+  const h = harness(dir, [{ steps: [{ op: "add", args: { all: true } }, { op: "commit", args: { message: "Add files" } }, { op: "push", args: {} }] }]);
+  await h.agent.handle("push the current dir to the github repo");
+  assert.ok(h.items.some((i) => /Nothing new to commit/.test(i.text || "")));
+  assert.match(h.cmds().at(-1).command, /git push -u origin main/);
+  assert.ok(h.cmds().at(-1).ok);
+  assert.equal(remoteLog("GitCatD"), "Initial commit");
+});
+
+test("regression: an unfinished request is reported as NOT completed", async () => {
+  const dir = makeRepo("unfinished", { remote: false });
+  const h = harness(dir, [{ steps: [{ op: "switch", args: { branch: "does-not-exist" } }, { op: "push", args: {} }] }, { steps: [] }]);
+  await h.agent.handle("switch and push");
+  const note = h.items.find((i) => /NOT completed/.test(i.text || ""));
+  assert.ok(note, "must say it did not finish");
+  assert.match(note.text, /Not run: push/);
+});
+
+test("sync_check answers 'did you push?' from git, not from the model", async () => {
+  const dir = makeRepo("synccheck"); // pushed
+  const h = harness(dir, []);
+  await h.agent.handle("did you push it?");
+  assert.equal(h.llm.calls.length, 0, "must not ask the model");
+  assert.match(h.cmds()[0].output, /Yes — main is on origin/);
+  fs.writeFileSync(path.join(dir, "n.txt"), "n\n");
+  git(dir, "add", ".");
+  git(dir, "commit", "-qm", "unpushed");
+  await h.agent.handle("is it on github?");
+  assert.match(h.cmds()[1].output, /1 local commit\(s\) NOT pushed/);
+  const fresh = harness(freshUncommittedRepo("syncnone"), []);
+  await fresh.agent.handle("did u push");
+  assert.match(fresh.cmds()[0].output, /No — there are no commits yet/);
+});

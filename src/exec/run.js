@@ -20,7 +20,10 @@ const CHILD_ENV = {
  * shell syntax). Never throws: callers check `ok`.
  */
 export async function run(argv, { cwd, input, timeoutMs = 120_000, color = true, signal } = {}) {
-  const [bin, ...args] = argv;
+  let [bin, ...args] = argv;
+  // Test hook: GITCAT_GH_SHIM=path/to/fake-gh.mjs replaces the real gh, so GitHub
+  // flows can be tested end to end without touching a real account.
+  if (bin === "gh" && process.env.GITCAT_GH_SHIM) [bin, args] = [process.execPath, [process.env.GITCAT_GH_SHIM, ...args]];
   const finalArgs = bin === "git" && color ? ["-c", "color.ui=always", ...args] : args;
   const started = Date.now();
   let r;

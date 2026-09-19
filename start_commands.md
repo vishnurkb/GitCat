@@ -51,12 +51,12 @@ ollama pull qwen3:4b-instruct-2507-q4_K_M
 ## Verify
 
 ```bash
-npm test                       # 43 tests: catalog, parsing, agent e2e on real git, TUI
+npm test                       # 50 tests: catalog, parsing, agent e2e on real git (incl. fake GitHub), TUI
 node scripts/e2e.js ollama     # 18 real-model scenarios on throwaway repos (~35 s)
 node scripts/eval.js ollama    # planner accuracy, 50 requests (~1 min)
 ```
 
-Expected: `ℹ pass 43 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 48/50` or better.
+Expected: `ℹ pass 50 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 49/50` or better.
 `node scripts/eval.js groq` takes ~11 minutes because it paces itself under Groq's rate limit.
 
 ## Using it
@@ -81,4 +81,4 @@ Expected: `ℹ pass 43 ℹ fail 0`; `18/18 scenarios passed`; `accuracy 48/50` o
 - **First request after boot takes ~25 s** — Ollama loading the model from disk. GitCat pre-warms it at startup; later requests are ~1 s.
 - **`groq 429 … tokens per minute`** — the free Groq tier's 8k TPM. GitCat falls back to Ollama automatically in `auto` mode; with `/model groq` only, wait a minute.
 - **`gitcat: the interactive UI needs a real terminal`** — stdin is piped. Use `gitcat -p "…"`.
-- **`gh repo create` / `gh auth login` — NOT VERIFIED end-to-end**: creating a real GitHub repo and the browser login were not executed (they create real account state). Built command verified against `gh repo create --help` flags and unit tests only.
+- **Repo created but empty on GitHub** — fixed 2026-09-19 (see docs/decisions.md). `gh repo create` now makes the first commit itself. Verified with a fake gh in tests and on the real `vishnurkb/GitCat`. `gh auth login` (browser) is still NOT VERIFIED.

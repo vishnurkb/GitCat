@@ -49,6 +49,11 @@ function mergeDuplicates(steps) {
   return out;
 }
 
+// Only a genuinely clean tree. "untracked files present" / "no changes added" go to the debugger (add + commit).
+const NOTHING_TO_COMMIT = /nothing to commit, working tree clean/i;
+const CD_INTENT = /\b(cd|chdir|change (the )?(folder|dir|directory)|go to|move to|switch to (the )?(folder|dir|directory)|open (the )?(folder|dir|directory|repo) )/i;
+const isCommitCmd = (c) => Array.isArray(c) && c[0] === "git" && c[1] === "commit";
+
 const firstLine = (s) => stripAnsi(s || "").trim().split(/\r?\n/).find(Boolean) || "";
 
 /**
@@ -129,6 +134,7 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
   function describeInternal(c) {
     if (c.internal === "gitignore") return `edit .gitignore  (+ ${c.patterns.join(", ")})`;
     if (c.internal === "cd") return `cd ${c.path}`;
+    if (c.internal === "sync_check") return "git fetch + compare branch with remote";
     return c.internal;
   }
 
@@ -143,12 +149,35 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     }
     if (c.internal === "cd") {
       const target = path.resolve(state.cwd, c.path.replace(/^~(?=$|[\\/])/, process.env.USERPROFILE || process.env.HOME || "~"));
+      const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+      if (same(target, state.cwd) || (snap.root && same(target, snap.root))) return { ok: true, exitCode: 0, stdout: "already here", stderr: "", ms: 0 };
       if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) return { ok: false, exitCode: 1, stdout: "", stderr: `no such folder: ${target}`, ms: 0 };
       state.cwd = target;
       ui.onCwd?.(target);
       return { ok: true, exitCode: 0, stdout: `now in ${target}`, stderr: "", ms: 0 };
     }
+    if (c.internal === "sync_check") return syncCheck(snap);
     return { ok: false, exitCode: 1, stdout: "", stderr: `unknown internal step ${c.internal}`, ms: 0 };
+  }
+
+  /** "Did it push?" answered by git, not by the model. */
+  async function syncCheck(snap) {
+    const done = (text) => ({ ok: true, exitCode: 0, stdout: text, stderr: "", ms: 0 });
+    if (!snap.isRepo) return done("✖ No — this folder is not a git repository.");
+    if (!snap.hasCommits) return done("✖ No — there are no commits yet, so nothing has been pushed.");
+    const remote = snap.upstreamRemote || snap.defaultRemote;
+    if (!remote) return done("✖ No — this repo has no remote. Nothing can have been pushed.");
+    const f = await run(["git", "fetch", remote], { cwd: state.cwd, color: false, timeoutMs: 30_000 });
+    if (!f.ok) return { ok: false, exitCode: 1, stdout: "", stderr: `couldn't reach ${remote}: ${firstLine(f.stderr)}`, ms: 0 };
+    const s = await snapshot(state.cwd);
+    const url = s.remoteUrls[remote];
+    if (!s.upstream) {
+      const onRemote = s.remoteBranches.includes(`${remote}/${s.branch}`);
+      return done(onRemote ? `⚠ ${s.branch} exists on ${remote} (${url}) but isn't tracked. Say "push" to link and sync it.` : `✖ No — branch ${s.branch} is NOT on ${remote} (${url}). Say "push" to publish it.`);
+    }
+    if (!s.ahead && !s.behind) return done(`✔ Yes — ${s.branch} is on ${remote} (${url}) and fully in sync.`);
+    const parts = [s.ahead && `${s.ahead} local commit(s) NOT pushed yet`, s.behind && `${s.behind} remote commit(s) not pulled`].filter(Boolean);
+    return done(`${s.ahead ? "✖ Not fully" : "✔ Pushed, but"} — ${s.branch} vs ${s.upstream}: ${parts.join(", ")}.`);
   }
 
   /** Run resolved steps in order. Stops at the first failure and hands it to the debugger. */
@@ -215,12 +244,20 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
           if (!res.ok && step.risk === "read" && res.exitCode === 1 && !res.stderr.trim()) res = { ...res, ok: true };
         }
         const text = cleanOutput([res.stdout, res.stderr].filter((t) => t && t.trim()).join("\n"));
+        // "nothing to commit" is not a failure of the request — skip it and keep going,
+        // otherwise a plan like [add, commit, push] never reaches the push.
+        if (!res.ok && isCommitCmd(c) && NOTHING_TO_COMMIT.test(stripAnsi(text))) {
+          ui.emit({ type: "note", tone: "muted", text: "Nothing new to commit — skipping the commit and continuing." });
+          outputs.push({ command: label, ok: true, output: "nothing to commit" });
+          continue;
+        }
         ui.emit({ type: "cmd", command: label, ok: res.ok, output: text, ms: res.ms });
         outputs.push({ command: label, ok: res.ok, output: text });
         if (!res.ok) {
           if (signal.aborted) return { ok: false, outputs };
-          await debug({ request, command: label, argv: c.internal ? [] : c, output: stripAnsi(text), rest: steps.slice(i + 1), depth, signal });
-          return { ok: false, outputs };
+          const fixed = await debug({ request, command: label, argv: c.internal ? [] : c, output: stripAnsi(text), failed: step, rest: steps.slice(i + 1), depth, signal });
+          outputs.push({ command: "auto-fix + retry", ok: fixed, output: fixed ? "fix applied, remaining steps ran" : "not fixed" });
+          return { ok: fixed, outputs, failedAt: label, notRun: fixed ? [] : steps.slice(i + 1).map((s) => s.op.id) };
         }
       }
       afterStep(step, snap);
@@ -237,7 +274,8 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
     }
   }
 
-  async function debug({ request, command, argv, output, rest, depth, signal }) {
+  /** Diagnose a failure and (after confirmation) run a fix. Returns true only if the fix ran through. */
+  async function debug({ request, command, argv, output, failed, rest, depth, signal }) {
     ui.status("Diagnosing the failure…");
     const snap = await snapshot(state.cwd);
     const known = matchKnownError(output, snap, argv);
@@ -254,13 +292,21 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         cause = cause || `Couldn't diagnose automatically (${e.message}).`;
         raw = [];
       }
-    } else if (rest.length && raw?.length) {
-      raw = [...raw, ...rest.filter((r) => !raw.some((k) => k.op === r.op.id)).map((s) => ({ op: s.op.id, args: s.args }))];
     }
     ui.emit({ type: "diagnosis", text: cause || "The command failed (see output above)." });
-    const steps = (raw || []).map((s) => resolveStep(s)).filter((s) => !s.error);
-    if (!steps.length || depth >= MAX_FIX_DEPTH || signal.aborted) return;
-    await execute(steps, { request, depth: depth + 1, signal, isFix: true });
+    let steps = (raw || []).map((s) => resolveStep(s)).filter((s) => !s.error);
+    // Re-running the exact step that just failed, unchanged, is a loop, not a fix.
+    const sig = (s) => `${s.op.id}${JSON.stringify(s.args)}`;
+    if (failed && !(known && known.steps !== null) && steps.length && sig(steps[0]) === sig(failed)) steps = steps.slice(1);
+    if (!steps.length || depth >= MAX_FIX_DEPTH || signal.aborted) return false;
+    if (known && known.steps !== null) {
+      // A known fix repairs the cause; the step that failed (and everything after it)
+      // still has to run, e.g. "no commits yet" -> add + commit, THEN the push again.
+      const tail = [failed, ...rest].filter((s) => s && !steps.some((f) => f.op.id === s.op.id));
+      steps = [...steps, ...tail];
+    }
+    const r = await execute(steps, { request, depth: depth + 1, signal, isFix: true });
+    return r.ok;
   }
 
   async function explain(question, outputs, signal) {
@@ -301,14 +347,24 @@ export function createAgent({ settings, cwd, ui, llm = chat }) {
         plan = await askModel(planMessage({ request, context: contextText(snap), turns: state.turns.slice(-4) }), signal, request);
       }
       if (signal.aborted) return;
+      // Hard guard: a folder change the user didn't ask for would run everything else in the wrong repo.
+      if (!route && plan.steps.some((s) => s.op.id === "cd") && !CD_INTENT.test(request)) {
+        plan.steps = plan.steps.filter((s) => s.op.id !== "cd");
+      }
       if (plan.reply || plan.ask) ui.emit({ type: "agent", text: plan.ask || plan.reply, ask: !!plan.ask, meta: plan.meta });
       if (plan.dropped?.length) ui.emit({ type: "note", tone: "warn", text: `Ignored invalid step(s): ${plan.dropped.join("; ")}` });
       if (plan.ask || !plan.steps.length) {
         remember(request, [], plan.ask || plan.reply);
         return;
       }
+      if (plan.steps.some((s) => s.op.id === "sync_check")) plan.explain = false; // its answer is exact already
       const result = await execute(plan.steps, { request, signal });
       if (result.ok && plan.explain && !signal.aborted) await explain(request, result.outputs, signal);
+      // The model's reply is a plan, not proof. When the request didn't finish, say so plainly.
+      if (!result.ok && !result.cancelled && !signal.aborted) {
+        const skipped = result.notRun?.length ? ` Not run: ${result.notRun.join(", ")}.` : "";
+        ui.emit({ type: "note", tone: "error", text: `Request NOT completed — stopped at \`${result.failedAt || "a failed step"}\`.${skipped}` });
+      }
       remember(request, result.outputs, plan.reply);
     } catch (e) {
       if (!signal.aborted) ui.emit({ type: "note", tone: "error", text: e.message });

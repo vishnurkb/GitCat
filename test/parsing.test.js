@@ -100,3 +100,10 @@ test("slash menu matching", () => {
   assert.equal(findSlash("/model ollama qwen").arg, "ollama qwen");
   assert.equal(findSlash("/nope"), null);
 });
+
+test("router: push-status questions go to sync_check", () => {
+  for (const q of ["did you push?", "did u push it", "is it pushed", "is everything on github?", "am I up to date", "is the github repo empty?"]) {
+    assert.deepEqual(fastRoute(q)?.steps, [{ op: "sync_check", args: {} }], q);
+  }
+  assert.equal(fastRoute("push the current dir to github repo"), null);
+});

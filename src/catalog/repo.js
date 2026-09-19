@@ -39,7 +39,7 @@ export default [
     risk: "write",
     build: (p) => [{ internal: "gitignore", patterns: p.patterns }],
   },
-  { id: "cd", desc: "change GitCat's working folder", params: { path: "str!" }, risk: "read", build: (p) => [{ internal: "cd", path: p.path }] },
+  { id: "cd", desc: "change GitCat's working folder — ONLY when the user explicitly asks to switch to another folder. Mentioning a path is not a request to cd", params: { path: "str!" }, risk: "read", build: (p) => [{ internal: "cd", path: p.path }] },
   {
     id: "worktree_add",
     desc: "check out a branch in a separate folder (new=true creates the branch)",

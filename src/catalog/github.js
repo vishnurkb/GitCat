@@ -17,20 +17,25 @@ export default [
   { id: "gh_setup_git", desc: "make git use gh credentials for https push/pull", risk: "write", build: () => [["gh", "auth", "setup-git"]] },
   {
     id: "gh_repo_create",
-    desc: "create a GitHub repo. from_current=true (default when inside a repo) links this folder as origin and pushes it. visibility default private",
+    desc: "create a GitHub repo AND publish this folder to it: runs git init / first commit if needed, links it as a remote and pushes. from_current=false = empty repo only. visibility default private",
     params: { name: "str", visibility: "private|public|internal", description: "str", from_current: "bool", remote: "str" },
     risk: (p) => (p.visibility === "public" ? "danger" : "write"),
     warn: (p) => (p.visibility === "public" ? "This repository will be PUBLIC — anyone can see the code." : ""),
     build: (p, ctx) => {
-      const name = p.name || path.basename(ctx.snap.root || ctx.cwd).replace(/\s+/g, "-");
+      const s = ctx.snap;
+      const name = p.name || path.basename(s.root || ctx.cwd).replace(/\s+/g, "-");
       const a = ["gh", "repo", "create", name, `--${p.visibility || "private"}`];
       if (p.description) a.push("--description", p.description);
-      const fromCurrent = p.from_current ?? ctx.snap.isRepo;
-      if (fromCurrent) {
-        a.push("--source=.", `--remote=${p.remote || (ctx.snap.remotes.includes("origin") ? "github" : "origin")}`);
-        if (ctx.snap.hasCommits) a.push("--push");
-      }
-      return [a];
+      if (!(p.from_current ?? true)) return [a];
+      // gh --push only pushes existing commits. A folder with no commits yet would
+      // silently end up as an EMPTY GitHub repo — so make the first commit first.
+      const steps = [];
+      if (!s.isRepo) steps.push(["git", "init", "-b", "main"]);
+      const hasFiles = !s.isRepo || s.staged?.length || s.unstaged?.length || s.untracked?.length;
+      if (!s.hasCommits && hasFiles) steps.push(["git", "add", "-A"], ["git", "commit", "-m", "Initial commit"]);
+      a.push("--source=.", `--remote=${p.remote || ((s.remotes || []).includes("origin") ? "github" : "origin")}`);
+      if (s.hasCommits || hasFiles) a.push("--push");
+      return [...steps, a];
     },
   },
   {
@@ -41,7 +46,7 @@ export default [
     build: (p) => [["gh", "repo", "clone", p.repo, ...(p.dir ? [p.dir] : [])]],
   },
   { id: "gh_repo_list", desc: "list GitHub repos of an owner (default you)", params: { owner: "str", limit: "int" }, risk: "read", build: (p) => [["gh", "repo", "list", ...(p.owner ? [p.owner] : []), "--limit", String(p.limit || 30)]] },
-  { id: "gh_repo_view", desc: "show a GitHub repo's info (web=true opens browser)", params: { repo: "str", web: "bool" }, risk: "read", build: (p) => [["gh", "repo", "view", ...(p.repo ? [p.repo] : []), ...(p.web ? ["--web"] : [])]] },
+  { id: "gh_repo_view", desc: "show a GitHub repo's info. web=true opens the browser — only when the user asks to open it", params: { repo: "str", web: "bool" }, risk: "read", build: (p) => [["gh", "repo", "view", ...(p.repo ? [p.repo] : []), ...(p.web ? ["--web"] : [])]] },
   { id: "gh_repo_fork", desc: "fork a repo to your account", params: { repo: "str!", clone: "bool" }, risk: "write", build: (p) => [["gh", "repo", "fork", p.repo, `--clone=${p.clone ? "true" : "false"}`]] },
   {
     id: "gh_repo_visibility",

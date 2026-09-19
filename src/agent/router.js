@@ -87,6 +87,9 @@ export function fastRoute(input, snap = {}) {
   let m = text.trim().match(/^(?:switch to|switch|checkout|check out)\s+([\w./-]+)$/i);
   const known = [...(snap.branches || []), ...(snap.remoteBranches || []).map((b) => b.replace(/^[^/]+\//, ""))];
   if (m && known.includes(m[1])) return { kind: "steps", steps: [{ op: "switch", args: { branch: m[1] } }] };
+  // "did you push?" is a fact git can answer exactly — never let a model guess it
+  if (/^(did (you|u|i|it) (push|upload)|(is|was) (it|this|that|everything|my code|the code) (pushed|uploaded|on (github|the remote|origin))|am i (up to date|in sync|synced)|is (the )?(github )?repo (updated|up to date|empty))\b/.test(key))
+    return { kind: "steps", steps: [{ op: "sync_check", args: {} }] };
   m = text.trim().match(/^commit\s+(?:-m\s+)?["'](.+)["']$/i);
   if (m) return { kind: "steps", steps: [{ op: "commit", args: { message: m[1] } }] };
   return null;

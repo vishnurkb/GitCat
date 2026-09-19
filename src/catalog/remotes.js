@@ -57,6 +57,12 @@ export default [
     },
   },
   {
+    id: "sync_check",
+    desc: "answer 'did I/you push?', 'is it on github?', 'am I up to date?': fetches and compares the branch with its remote. Exact, no guessing",
+    risk: "read",
+    build: () => [{ internal: "sync_check" }],
+  },
+  {
     id: "set_upstream",
     desc: "make current branch track remote/branch",
     params: { remote: "str", branch: "str" },

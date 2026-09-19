@@ -70,7 +70,7 @@ snapshot were skipped, the second step would push the old branch.
 
 ```mermaid
 flowchart LR
-  E[edit src/] --> T[npm test — 43 tests]
+  E[edit src/] --> T[npm test — 50 tests]
   T --> EV[node scripts/eval.js ollama — accuracy must not drop]
   EV --> E2[node scripts/e2e.js ollama — 18 real scenarios]
   E2 --> D[python check_docs.py --write]
