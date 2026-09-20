@@ -173,3 +173,12 @@ test("intent guard: invented commit messages are dropped, given ones kept", asyn
   assert.equal(msg("commit with the message 'Fix JWT bug'", "Fix JWT bug"), "Fix JWT bug");
   assert.equal(msg('commit it as "Add config"', "Add config"), "Add config");
 });
+
+test("intent guard: repo names with spaces are renamed the way GitHub will, and the user is told", async () => {
+  const { applyIntentGuards } = await import("../src/agent/intent.js");
+  const { resolveStep } = await import("../src/catalog/index.js");
+  const g = applyIntentGuards("create a private repo with the name: DeepSeek Harness", [resolveStep({ op: "gh_repo_create", args: { name: "DeepSeek Harness" } })]);
+  assert.equal(g.steps[0].args.name, "DeepSeek-Harness");
+  assert.match(g.notes[0], /doesn't allow .* → creating it as DeepSeek-Harness/);
+  assert.equal(applyIntentGuards("create repo my-app", [resolveStep({ op: "gh_repo_create", args: { name: "my-app" } })]).notes.length, 0);
+});

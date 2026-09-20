@@ -1,6 +1,14 @@
 // GitHub operations via the `gh` CLI (already authenticated on this machine).
 import path from "node:path";
 
+/** GitHub's own repo-name rule: everything else becomes a dash. */
+export const slug = (s) =>
+  String(s)
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "") || "repo";
+
 export default [
   { id: "gh_status", desc: "which GitHub accounts are logged in and which is active", risk: "read", build: () => [["gh", "auth", "status"]] },
   {
@@ -23,7 +31,9 @@ export default [
     warn: (p) => (p.visibility === "public" ? "This repository will be PUBLIC — anyone can see the code." : ""),
     build: (p, ctx) => {
       const s = ctx.snap;
-      const name = p.name || path.basename(s.root || ctx.cwd).replace(/\s+/g, "-");
+      // GitHub rewrites anything outside [A-Za-z0-9._-] to "-": "DeepSeek Harness" becomes
+      // "DeepSeek-Harness". Send the real name so the URL and later lookups match.
+      const name = slug(p.name || path.basename(s.root || ctx.cwd));
       const a = ["gh", "repo", "create", name, `--${p.visibility || "private"}`];
       if (p.description) a.push("--description", p.description);
       if (!(p.from_current ?? true)) return [a];

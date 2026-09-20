@@ -7,6 +7,7 @@
 //     -D, --global) — the model's plan is not permission.
 // Returns {steps, notes}; notes explain every correction to the user.
 import { resolveStep } from "../catalog/index.js";
+import { slug } from "../catalog/github.js";
 
 const has = (text, re) => re.test(text);
 
@@ -145,6 +146,10 @@ export function applyIntentGuards(request, steps, snap = {}, turns = []) {
     // a commit message the user never gave ("chore: commit all changes") is worse than one written from the diff
     if (id === "commit" && a.message && !a.amend && !/["'“‘`]|\b(message|msg|saying|titled|called|named|with the text|describe it as)\b/i.test(text)) {
       return note(withoutArg(s, "message"), "you didn't give a commit message → writing one from your diff");
+    }
+    // GitHub can't have spaces/odd characters in a repo name — say so instead of silently renaming
+    if (id === "gh_repo_create" && a.name && slug(a.name) !== a.name) {
+      return note(withArgs(s, { name: slug(a.name) }), `GitHub doesn't allow "${a.name}" as a repo name → creating it as ${slug(a.name)}`);
     }
     // "delete the tag on the remote" is not "push the tag"
     if (id === "push_tags" && /\b(delete|remove|drop)\b/i.test(text) && /\btag/i.test(text) && a.name) {

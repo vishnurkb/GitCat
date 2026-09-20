@@ -569,3 +569,16 @@ test("intent guard is applied end to end (their version)", async () => {
   assert.equal(fs.readFileSync(path.join(dir, "a.txt"), "utf8").replace(/\r/g, ""), "theirs\n");
   assert.ok(h.items.some((i) => i.type === "note" && /keeping theirs/.test(i.text)));
 });
+
+test("repo names with spaces: uses GitHub's dashed name and verifies by the URL gh returned", async () => {
+  useFakeGh();
+  const dir = freshUncommittedRepo("spacey");
+  const h = harness(dir, [{ steps: [{ op: "gh_repo_create", args: { name: "GitCat Space Test", visibility: "private" } }] }]);
+  await h.agent.handle('create a private repo called "GitCat Space Test" and push this folder');
+  const create = h.cmds().find((c) => /gh repo create/.test(c.command));
+  assert.match(create.command, /gh repo create GitCat-Space-Test/, "must send the dashed name GitHub will use");
+  const v = h.items.find((i) => i.type === "verify");
+  assert.equal(v.ok, true, v.text);
+  assert.equal(summaryOf(h).ok, true);
+  assert.equal(remoteLog("GitCat-Space-Test"), "Initial commit");
+});

@@ -2,6 +2,11 @@
 
 Append-only, newest first.
 
+## 2026-09-20 — Repo names with spaces: verify by the URL gh returns, not the name we asked for
+**Context:** Real use: "Create a new private repo with the name: DeepSeek Harness". gh created `vishnurkb/DeepSeek-Harness` (GitHub rewrites anything outside `[A-Za-z0-9._-]` to `-`) and pushed the code, but the check looked up the literal name `DeepSeek Harness`, got GraphQL "Could not resolve to a Repository", and reported **Request NOT completed** for work that had actually succeeded. Not a lie (nothing false was claimed as done), but it reads as a failure and destroys trust.
+**Decision:** `gh_repo_create` slugifies the name the way GitHub does, the intent guard tells the user ("GitHub doesn't allow … → creating it as DeepSeek-Harness"), and the verifier resolves the repo from the URL gh printed rather than from the requested name.
+**Why the suites missed it:** every generated test repo already had a slug-safe name. Added a regression test with a spaced name (fake gh) and reproduced the exact user prompt against real GitHub (`Space-Demo-Repo`, verified).
+
 ## 2026-09-20 — Deterministic intent guard on top of the model's plan
 **Context:** A 73-prompt user-journey test (plain-English requests built from a developer's git cheat-sheet, judged by independent git/`gh api` checks) found the 4B model picks the right *operation* but slips on *parameters* that matter: "merge dev into main" ran as `switch dev; merge main` (reversed), "keep THEIR version" became `--ours`, "delete it" deleted a branch and a remote, "delete the tag on the remote" became `push` of the tag, cherry-picking a commit named by message used the branch tip.
 **Decision:** `src/agent/intent.js` reads the user's actual words after planning and corrects those parameters (merge direction, conflict side, stay/switch, soft/mixed/hard, pop/apply, PR "it" from recent turns, commit-by-message via git's `:/text`), strips dangerous flags nobody asked for (public, `--force`, `--hard`, `-D`, `--global`), and turns vague destructive requests ("delete it") into a question. Every correction is shown to the user.

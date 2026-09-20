@@ -162,7 +162,10 @@ const VERIFIERS = {
     return active === want ? pass(`active GitHub account is now ${active}`) : fail(`active GitHub account is ${active}, not ${want}`);
   },
   async gh_repo_create(args, before, cwd, ctx) {
-    const name = ctx.builtName;
+    // gh prints the real URL it created; GitHub may have renamed the repo
+    // ("DeepSeek Harness" -> "DeepSeek-Harness"), so trust the URL over the asked-for name.
+    const fromUrl = (urlIn(ctx.output).match(/github\.com\/([^\s/]+\/[^\s/]+?)(?:\.git)?$/) || [])[1];
+    const name = fromUrl || ctx.builtName;
     const r = await ghJson(["repo", "view", name, "--json", "url,visibility,isEmpty,defaultBranchRef"], cwd);
     if (r.error) return fail(`GitHub has no repo ${name}: ${r.error.split("\n")[0]}`);
     const d = r.data;
