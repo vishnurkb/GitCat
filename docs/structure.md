@@ -65,6 +65,7 @@ The tables below are hand-written: what each file is for and what would surprise
 |   `-- ui.test.js
 |-- .env.example
 |-- .gitignore
+|-- CHANGELOG.md
 |-- check_docs.bat
 |-- check_docs.py
 |-- package-lock.json
@@ -151,6 +152,7 @@ The tables below are hand-written: what each file is for and what would surprise
 | Path | What it does |
 |---|---|
 | `README.md` | Three-line pitch + links. |
+| `CHANGELOG.md` | What changed in each release, with the reason per file. Written by hand at release time. |
 | `start_commands.md` | How to install, run, verify, reset — every command was run. |
 | `docs/architecture.md` | Components, flows (Mermaid), data, boundaries. Source of truth for the HTML. |
 | `docs/architecture.html` | Browsable render of architecture.md. Regenerate when the markdown changes. |
